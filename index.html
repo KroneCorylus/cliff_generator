@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stepped Mountain Contour Generator</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --border: #2a323d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  #app { display: flex; height: 100vh; }
+
+  /* ---- Controls panel ---- */
+  #panel {
+    width: 320px; flex: 0 0 320px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px 16px 40px;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); font-size: 11px; margin-bottom: 14px; }
+
+  fieldset {
+    border: 1px solid var(--border); border-radius: 8px;
+    margin: 0 0 12px; padding: 10px 12px 12px;
+    background: var(--panel-2);
+  }
+  legend { color: var(--accent); font-weight: 600; padding: 0 6px; font-size: 12px; }
+
+  .row { margin: 9px 0; }
+  .row label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+  .row label .val { color: var(--accent-2); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .row .hint { color: var(--muted); font-size: 10.5px; margin-top: 2px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  select, input[type=number] {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px;
+  }
+  .two { display: flex; gap: 8px; }
+  .two > div { flex: 1; }
+  .check { display: flex; align-items: center; gap: 7px; }
+  .check input { accent-color: var(--accent); }
+
+  .btns { display: flex; gap: 8px; margin-top: 4px; }
+  button {
+    flex: 1; cursor: pointer; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); padding: 7px 10px; border-radius: 6px;
+    font-weight: 600;
+  }
+  button.primary { background: var(--accent); color: #06121f; border-color: var(--accent); }
+  button:hover { filter: brightness(1.15); }
+
+  .algo-params { display: none; }
+  .algo-params.active { display: block; }
+
+  /* ---- Canvas area ---- */
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; }
+  #wrap { position: relative; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+  canvas { display: block; background: #1b2b3a; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #meta { position: fixed; bottom: 10px; right: 16px; color: var(--muted); font-size: 11px; }
+  #legend { display: none; flex-wrap: wrap; gap: 4px 14px; max-width: 640px; margin: 14px auto 0; }
+  #legend.on { display: flex; }
+  #legend .item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); width: 140px; }
+  #legend .sw { width: 13px; height: 13px; border-radius: 3px; border: 1px solid rgba(255,255,255,.15); flex: 0 0 auto; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h1>Stepped Mountain</h1>
+    <div class="sub">Contour-only terraced mountain generator</div>
+
+    <fieldset>
+      <legend>Tile grid</legend>
+      <div class="row">
+        <label>View mode</label>
+        <select id="view">
+          <option value="fill">Terraced fill</option>
+          <option value="contour">Contour tiles only</option>
+          <option value="cliff">Cliff borders (autotile)</option>
+        </select>
+        <div class="hint">Contour = outer ring of each step. Cliff = border tiles by type.</div>
+      </div>
+      <div class="row">
+        <label>Grid size (tiles) <span class="val" id="vRes">64</span></label>
+        <input type="range" id="res" min="8" max="256" step="1" value="64" />
+        <div class="hint">Square map, e.g. 64 = 64×64 tiles.</div>
+      </div>
+      <div class="row">
+        <label>Zoom (px / tile) <span class="val" id="vZoom">9</span></label>
+        <input type="range" id="zoom" min="1" max="32" step="1" value="9" />
+        <div class="hint">Pixel-art scale of each tile on screen.</div>
+      </div>
+      <div class="row check">
+        <input type="checkbox" id="gridlines" />
+        <label style="display:inline">Show tile grid lines</label>
+      </div>
+      <div class="row check">
+        <input type="checkbox" id="outline" />
+        <label style="display:inline">Step outlines (sprite borders)</label>
+      </div>
+      <div class="row check">
+        <input type="checkbox" id="clean" checked />
+        <label style="display:inline">Clean cliffs (Factorio-legal)</label>
+      </div>
+      <div class="hint">Staircases slopes to 1 level &amp; removes 1-wide spikes.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Steps</legend>
+      <div class="row">
+        <label>Number of steps <span class="val" id="vSteps">8</span></label>
+        <input type="range" id="steps" min="2" max="40" step="1" value="8" />
+      </div>
+      <div class="row">
+        <label>Step spacing</label>
+        <select id="spacing">
+          <option value="linear">Linear (equal height)</option>
+          <option value="ease">Ease-out (wider near top)</option>
+          <option value="easein">Ease-in (wider near base)</option>
+        </select>
+        <div class="hint">How elevation levels are distributed.</div>
+      </div>
+      <div class="hint">Each tile is snapped to one of the step elevations.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Algorithm</legend>
+      <div class="row">
+        <select id="algo">
+          <option value="perlin">Perlin (fBm)</option>
+          <option value="value">Value noise (fBm)</option>
+          <option value="ridged">Ridged multifractal</option>
+          <option value="diamond">Diamond-Square</option>
+          <option value="cone">Cone</option>
+          <option value="gaussian">Gaussian bump</option>
+        </select>
+      </div>
+
+      <!-- Shared noise params -->
+      <div class="algo-params" data-for="perlin value ridged">
+        <div class="row">
+          <label>Frequency / scale <span class="val" id="vFreq">3.0</span></label>
+          <input type="range" id="freq" min="0.5" max="12" step="0.1" value="3" />
+        </div>
+        <div class="row">
+          <label>Octaves <span class="val" id="vOct">5</span></label>
+          <input type="range" id="oct" min="1" max="8" step="1" value="5" />
+        </div>
+        <div class="row">
+          <label>Persistence <span class="val" id="vPers">0.50</span></label>
+          <input type="range" id="pers" min="0.1" max="0.9" step="0.05" value="0.5" />
+          <div class="hint">Amplitude falloff per octave (roughness).</div>
+        </div>
+        <div class="row">
+          <label>Lacunarity <span class="val" id="vLac">2.0</span></label>
+          <input type="range" id="lac" min="1.5" max="3.5" step="0.1" value="2" />
+          <div class="hint">Frequency growth per octave (detail).</div>
+        </div>
+      </div>
+
+      <div class="algo-params" data-for="diamond">
+        <div class="row">
+          <label>Roughness <span class="val" id="vRough">0.55</span></label>
+          <input type="range" id="rough" min="0.1" max="1" step="0.05" value="0.55" />
+        </div>
+      </div>
+
+      <div class="algo-params" data-for="cone gaussian">
+        <div class="hint">Smooth analytic shape — good baseline to test the stepping/contouring.</div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Single mountain shaping</legend>
+      <div class="row">
+        <label>Radial falloff <span class="val" id="vFall">2.2</span></label>
+        <input type="range" id="fall" min="0" max="6" step="0.1" value="2.2" />
+        <div class="hint">Pulls terrain into one central peak. 0 = none.</div>
+      </div>
+      <div class="row">
+        <label>Mountain radius <span class="val" id="vRad">0.85</span></label>
+        <input type="range" id="rad" min="0.3" max="1.2" step="0.05" value="0.85" />
+        <div class="hint">Fraction of the canvas the mountain occupies.</div>
+      </div>
+      <div class="row">
+        <label>Peak sharpness <span class="val" id="vSharp">1.0</span></label>
+        <input type="range" id="sharp" min="0.3" max="3" step="0.1" value="1" />
+        <div class="hint">&gt;1 sharpens the summit, &lt;1 flattens it.</div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Shape variety</legend>
+      <div class="row">
+        <label>Stretch <span class="val" id="vStretch">0.0</span></label>
+        <input type="range" id="stretch" min="-0.7" max="0.7" step="0.05" value="0" />
+        <div class="hint">Elongate the mountain into a wide / ridge shape.</div>
+      </div>
+      <div class="row">
+        <label>Rotation <span class="val" id="vRot">0.00</span></label>
+        <input type="range" id="rot" min="0" max="1" step="0.02" value="0" />
+        <div class="hint">Orientation of the stretch (0–180°).</div>
+      </div>
+      <div class="row">
+        <label>Edge irregularity <span class="val" id="vEdge">0.35</span></label>
+        <input type="range" id="edge" min="0" max="0.9" step="0.05" value="0.35" />
+        <div class="hint">Lumpy, lobed outline instead of a clean circle.</div>
+      </div>
+      <div class="row">
+        <label>Edge scale <span class="val" id="vEdgeScale">1.6</span></label>
+        <input type="range" id="edgeScale" min="0.5" max="5" step="0.1" value="1.6" />
+        <div class="hint">Few big lobes (low) vs many small bays (high).</div>
+      </div>
+      <div class="row">
+        <label>Domain warp <span class="val" id="vWarp">0.18</span></label>
+        <input type="range" id="warp" min="0" max="0.6" step="0.02" value="0.18" />
+        <div class="hint">Organic, swirled distortion of the terrain.</div>
+      </div>
+      <div class="row">
+        <label>Warp scale <span class="val" id="vWarpScale">2.0</span></label>
+        <input type="range" id="warpScale" min="0.5" max="6" step="0.1" value="2" />
+      </div>
+      <div class="btns" style="margin-top:6px">
+        <button id="rndShape">Randomize shape</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Seed</legend>
+      <div class="row two">
+        <div>
+          <input type="number" id="seed" value="1337" />
+        </div>
+        <div>
+          <button id="rnd">Random</button>
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="btns">
+      <button class="primary" id="regen">Regenerate</button>
+      <button id="png">Save PNG</button>
+    </div>
+    <div class="btns" style="margin-top:8px">
+      <button id="json">Export JSON</button>
+    </div>
+    <div class="row check" style="margin-top:10px">
+      <input type="checkbox" id="auto" checked />
+      <label style="display:inline">Live update on change</label>
+    </div>
+  </div>
+
+  <div id="stage">
+    <div>
+      <div id="wrap"><canvas id="cv"></canvas></div>
+      <div id="legend"></div>
+    </div>
+  </div>
+</div>
+<div id="meta"></div>
+
+<script>
+/* =====================================================================
+   Utilities
+   ===================================================================== */
+// Deterministic PRNG (mulberry32)
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const lerp = (a, b, t) => a + (b - a) * t;
+const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
+
+/* =====================================================================
+   Gradient (Perlin) noise — 2D, seeded permutation table
+   ===================================================================== */
+function makePerlin(seed) {
+  const rnd = mulberry32(seed);
+  const p = new Uint8Array(512);
+  const perm = Array.from({ length: 256 }, (_, i) => i);
+  for (let i = 255; i > 0; i--) {
+    const j = (rnd() * (i + 1)) | 0;
+    [perm[i], perm[j]] = [perm[j], perm[i]];
+  }
+  for (let i = 0; i < 512; i++) p[i] = perm[i & 255];
+  const grad = (h, x, y) => {
+    switch (h & 7) {
+      case 0: return x + y; case 1: return -x + y;
+      case 2: return x - y; case 3: return -x - y;
+      case 4: return x; case 5: return -x;
+      case 6: return y; default: return -y;
+    }
+  };
+  return function (x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const u = fade(xf), v = fade(yf);
+    const aa = p[p[X] + Y], ab = p[p[X] + Y + 1];
+    const ba = p[p[X + 1] + Y], bb = p[p[X + 1] + Y + 1];
+    const x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
+    const x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
+    return lerp(x1, x2, v); // ~[-1,1]
+  };
+}
+
+/* =====================================================================
+   Value noise — 2D, seeded
+   ===================================================================== */
+function makeValue(seed) {
+  const rnd = mulberry32(seed);
+  const size = 256;
+  const tab = new Float32Array(size * size);
+  for (let i = 0; i < tab.length; i++) tab[i] = rnd() * 2 - 1;
+  const at = (xi, yi) => tab[((yi & 255) * size) + (xi & 255)];
+  return function (x, y) {
+    const X = Math.floor(x), Y = Math.floor(y);
+    const xf = x - X, yf = y - Y;
+    const u = fade(xf), v = fade(yf);
+    const x1 = lerp(at(X, Y), at(X + 1, Y), u);
+    const x2 = lerp(at(X, Y + 1), at(X + 1, Y + 1), u);
+    return lerp(x1, x2, v);
+  };
+}
+
+/* =====================================================================
+   fBm / ridged wrappers
+   ===================================================================== */
+function fbm(noise, x, y, oct, pers, lac) {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * noise(x * freq, y * freq);
+    norm += amp; amp *= pers; freq *= lac;
+  }
+  return sum / norm; // ~[-1,1]
+}
+function ridged(noise, x, y, oct, pers, lac) {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    const n = 1 - Math.abs(noise(x * freq, y * freq)); // [0,1] ridges
+    sum += amp * n * n;
+    norm += amp; amp *= pers; freq *= lac;
+  }
+  return (sum / norm) * 2 - 1; // remap to ~[-1,1]
+}
+
+/* =====================================================================
+   Diamond-Square — generates a (2^n+1) grid, sampled bilinearly
+   ===================================================================== */
+function makeDiamondSquare(seed, roughness) {
+  const n = 8;                  // 257x257
+  const size = (1 << n) + 1;
+  const g = new Float32Array(size * size);
+  const rnd = mulberry32(seed);
+  const idx = (x, y) => y * size + x;
+  const jitter = (s) => (rnd() * 2 - 1) * s;
+  // corners
+  g[idx(0, 0)] = jitter(1); g[idx(size - 1, 0)] = jitter(1);
+  g[idx(0, size - 1)] = jitter(1); g[idx(size - 1, size - 1)] = jitter(1);
+  let step = size - 1, scale = 1;
+  while (step > 1) {
+    const half = step >> 1;
+    for (let y = half; y < size; y += step)       // diamond
+      for (let x = half; x < size; x += step) {
+        const a = g[idx(x - half, y - half)], b = g[idx(x + half, y - half)];
+        const c = g[idx(x - half, y + half)], d = g[idx(x + half, y + half)];
+        g[idx(x, y)] = (a + b + c + d) / 4 + jitter(scale);
+      }
+    for (let y = 0; y < size; y += half)          // square
+      for (let x = (y + half) % step; x < size; x += step) {
+        let sum = 0, cnt = 0;
+        if (x - half >= 0)    { sum += g[idx(x - half, y)]; cnt++; }
+        if (x + half < size)  { sum += g[idx(x + half, y)]; cnt++; }
+        if (y - half >= 0)    { sum += g[idx(x, y - half)]; cnt++; }
+        if (y + half < size)  { sum += g[idx(x, y + half)]; cnt++; }
+        g[idx(x, y)] = sum / cnt + jitter(scale);
+      }
+    step = half; scale *= roughness;
+  }
+  // bilinear sampler over [0,1]
+  return function (u, v) {
+    const fx = clamp01(u) * (size - 1), fy = clamp01(v) * (size - 1);
+    const x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+    const tx = fx - x0, ty = fy - y0;
+    const a = lerp(g[idx(x0, y0)], g[idx(x1, y0)], tx);
+    const b = lerp(g[idx(x0, y1)], g[idx(x1, y1)], tx);
+    return lerp(a, b, ty);
+  };
+}
+
+/* =====================================================================
+   Heightfield builder — fills a res x res Float32Array in [0,1]
+   ===================================================================== */
+function buildField(P) {
+  const R = P.res;
+  const field = new Float32Array(R * R);
+
+  // base generator returns a value in roughly [-1,1] given normalized (u,v) in [0,1]
+  let gen;
+  if (P.algo === 'perlin') {
+    const noise = makePerlin(P.seed);
+    gen = (u, v) => fbm(noise, u * P.freq, v * P.freq, P.oct, P.pers, P.lac);
+  } else if (P.algo === 'value') {
+    const noise = makeValue(P.seed);
+    gen = (u, v) => fbm(noise, u * P.freq, v * P.freq, P.oct, P.pers, P.lac);
+  } else if (P.algo === 'ridged') {
+    const noise = makePerlin(P.seed);
+    gen = (u, v) => ridged(noise, u * P.freq, v * P.freq, P.oct, P.pers, P.lac);
+  } else if (P.algo === 'diamond') {
+    const ds = makeDiamondSquare(P.seed, P.rough);
+    gen = (u, v) => ds(u, v);
+  } else if (P.algo === 'cone') {
+    gen = (u, v) => {
+      const d = Math.hypot(u - 0.5, v - 0.5) / 0.5;
+      return (1 - d) * 2 - 1;
+    };
+  } else { // gaussian
+    gen = (u, v) => {
+      const d2 = (u - 0.5) ** 2 + (v - 0.5) ** 2;
+      return Math.exp(-d2 / (2 * 0.10)) * 2 - 1;
+    };
+  }
+
+  // Auxiliary noises (seed-derived) that break the circular symmetry
+  const warpX = makePerlin((P.seed ^ 0x9e3779b1) | 0);
+  const warpY = makePerlin((P.seed ^ 0x85ebca77) | 0);
+  const edgeN = makePerlin((P.seed ^ 0xc2b2ae3d) | 0);
+
+  // Anisotropy: rotate the falloff frame, then stretch one axis -> wide / elongated
+  const ang = P.rot * Math.PI;
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const fx = Math.max(0.3, 1 + P.stretch);   // axis radii (stretch in [-1,1])
+  const fy = Math.max(0.3, 1 - P.stretch);
+
+  let min = Infinity, max = -Infinity;
+  for (let j = 0; j < R; j++) {
+    const v = j / (R - 1);
+    for (let i = 0; i < R; i++) {
+      const u = i / (R - 1);
+
+      // Domain warp: bend coordinates so terrain detail isn't radially symmetric
+      let su = u, sv = v;
+      if (P.warp > 0) {
+        su = u + P.warp * warpX(u * P.warpScale, v * P.warpScale);
+        sv = v + P.warp * warpY(u * P.warpScale + 5.2, v * P.warpScale + 1.7);
+      }
+      let h = gen(su, sv);                       // ~[-1,1]
+      h = (h + 1) * 0.5;                         // -> [0,1]
+
+      // Radial falloff: isolate ONE mountain, but with stretch + irregular edge
+      if (P.fall > 0) {
+        let dx = u - 0.5, dy = v - 0.5;
+        const rx = (dx * ca + dy * sa) / fx;     // rotate + anisotropic scale
+        const ry = (-dx * sa + dy * ca) / fy;
+        let d = Math.hypot(rx, ry) / 0.5;        // 0 center .. ~1 edge
+        // Edge irregularity: low-freq lumps push the outline in/out by direction
+        if (P.edge > 0) {
+          d *= 1 + P.edge * edgeN(u * P.edgeScale + 3.1, v * P.edgeScale + 9.4);
+        }
+        const t = clamp01(d / P.rad);
+        const mask = clamp01(1 - Math.pow(t, P.fall));
+        h *= mask;
+      }
+      const idx = j * R + i;
+      field[idx] = h;
+      if (h < min) min = h;
+      if (h > max) max = h;
+    }
+  }
+
+  // Normalize to [0,1], then apply peak sharpness
+  const span = (max - min) || 1;
+  for (let k = 0; k < field.length; k++) {
+    let h = (field[k] - min) / span;
+    if (P.sharp !== 1) h = Math.pow(h, P.sharp);
+    field[k] = h;
+  }
+  return field;
+}
+
+/* =====================================================================
+   Render
+   ===================================================================== */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+function levelsFor(P) {
+  const out = [];
+  for (let s = 1; s <= P.steps; s++) {
+    let t = s / (P.steps + 1);          // strictly inside (0,1)
+    if (P.spacing === 'ease') t = 1 - Math.pow(1 - t, 2);
+    else if (P.spacing === 'easein') t = Math.pow(t, 2);
+    out.push(t);
+  }
+  return out;
+}
+
+// Elevation palette (low -> high): water, grass, grass2, sand, rock, snow
+const STOPS = [
+  [44, 92, 138],    // 0 lowland / water
+  [74, 130, 70],    // grass
+  [120, 160, 78],   // light grass
+  [201, 178, 122],  // sand / dirt
+  [140, 110, 80],   // rock
+  [236, 238, 244],  // snow peak
+];
+function paletteColor(t) {
+  const x = clamp01(t) * (STOPS.length - 1);
+  const i = Math.floor(x), f = x - i;
+  const a = STOPS[i], b = STOPS[Math.min(i + 1, STOPS.length - 1)];
+  return `rgb(${lerp(a[0], b[0], f) | 0},${lerp(a[1], b[1], f) | 0},${lerp(a[2], b[2], f) | 0})`;
+}
+
+/* ---- Cliff / border autotile classification (Factorio / AoE style) ----
+   A tile belongs to step s. We look at its neighbours' steps. A cliff face
+   points toward any orthogonal neighbour that is LOWER. The combination of
+   faces selects the border sprite. Concave (inner) corners are found via the
+   diagonals when no orthogonal neighbour is lower. */
+const CLIFF_TYPES = {
+  // Straight walls (id = exported Factorio name)
+  wallN:   { name: 'east-to-west',   id: 'east-to-west',   color: '#4ea1ff' },
+  wallE:   { name: 'south-to-north', id: 'south-to-north', color: '#39c0c8' },
+  wallS:   { name: 'west-to-east',   id: 'west-to-east',   color: '#5ad17a' },
+  wallW:   { name: 'north-to-south', id: 'north-to-south', color: '#b6d24a' },
+  // Outer (convex) corners — clockwise turning loop
+  outNW:   { name: 'east-to-south',  id: 'east-to-south',  color: '#ff5bb0' },
+  outNE:   { name: 'south-to-west',  id: 'south-to-west',  color: '#ffcf3f' },
+  outSE:   { name: 'west-to-north',  id: 'west-to-north',  color: '#ff9f43' },
+  outSW:   { name: 'north-to-east',  id: 'north-to-east',  color: '#ff6b6b' },
+  // Inner (concave) corners — reversed direction
+  inNE:    { name: 'east-to-north',  id: 'east-to-north',  color: '#7a5230' },
+  inSE:    { name: 'south-to-east',  id: 'south-to-east',  color: '#8a5a36' },
+  inSW:    { name: 'west-to-south',  id: 'west-to-south',  color: '#9a623c' },
+  inNW:    { name: 'north-to-west',  id: 'north-to-west',  color: '#aa6a42' },
+  // 1-wide features have no single Factorio cliff tile (id null = unrepresentable)
+  ridgeNS: { name: '1-wide N-S (no tile)', id: null, color: '#c08bff' },
+  ridgeEW: { name: '1-wide E-W (no tile)', id: null, color: '#8b9bff' },
+  tip:     { name: 'peninsula tip (no tile)', id: null, color: '#ffffff' },
+  pillar:  { name: 'pillar (no tile)',        id: null, color: '#dfe3e8' },
+};
+const CLIFF_OUTER = {
+  1: CLIFF_TYPES.wallN, 2: CLIFF_TYPES.wallE, 4: CLIFF_TYPES.wallS, 8: CLIFF_TYPES.wallW,
+  3: CLIFF_TYPES.outNE, 6: CLIFF_TYPES.outSE, 12: CLIFF_TYPES.outSW, 9: CLIFF_TYPES.outNW,
+  5: CLIFF_TYPES.ridgeNS, 10: CLIFF_TYPES.ridgeEW,
+  7: CLIFF_TYPES.tip, 11: CLIFF_TYPES.tip, 13: CLIFF_TYPES.tip, 14: CLIFF_TYPES.tip,
+  15: CLIFF_TYPES.pillar,
+};
+function classifyCliff(grid, sAt, x, y, R) {
+  const s = grid[y * R + x];
+  const mask =
+    (sAt(x, y - 1) < s ? 1 : 0) | (sAt(x + 1, y) < s ? 2 : 0) |
+    (sAt(x, y + 1) < s ? 4 : 0) | (sAt(x - 1, y) < s ? 8 : 0);
+  if (mask) return CLIFF_OUTER[mask];
+  // No orthogonal cliff: check diagonals for concave (inner) corners
+  if (sAt(x + 1, y - 1) < s) return CLIFF_TYPES.inNE;
+  if (sAt(x + 1, y + 1) < s) return CLIFF_TYPES.inSE;
+  if (sAt(x - 1, y + 1) < s) return CLIFF_TYPES.inSW;
+  if (sAt(x - 1, y - 1) < s) return CLIFF_TYPES.inNW;
+  return null;
+}
+
+// Clamped neighbour sampler for a step grid (out-of-bounds = edge tile)
+function makeSAt(grid, R) {
+  return (x, y) => grid[Math.max(0, Math.min(R - 1, y)) * R + Math.max(0, Math.min(R - 1, x))];
+}
+
+/* Cleanup pass -> remove the patterns that have no legal Factorio cliff tile.
+   Each rule changes only a handful of cells, so terrain is preserved (no flooding).
+     a) Staircase — raise valleys so no orthogonal neighbour is >1 level above.
+     b) Saddle fill — break diagonal pinches (H L / L H) by raising one low cell.
+     c) Erode — flatten a 1-wide spike (lower opposite/3+ sides) DOWN to its
+        surroundings, but only when it has no higher neighbour, so it neither
+        fights the staircase nor chains outward. */
+const ONE_WIDE_MASK = new Set([5, 10, 7, 11, 13, 14, 15]);
+function cleanCliffs(grid, R) {
+  const sAt = makeSAt(grid, R);
+  const idx = (x, y) => y * R + x;
+  for (let pass = 0, changed = true; changed && pass < 256; pass++) {
+    changed = false;
+    // a) Staircase
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      const t = Math.max(sAt(x, y - 1), sAt(x + 1, y), sAt(x, y + 1), sAt(x - 1, y)) - 1;
+      if (grid[idx(x, y)] < t) { grid[idx(x, y)] = t; changed = true; }
+    }
+    // b) Saddle fill (2x2 diagonal pinch)
+    for (let y = 0; y < R - 1; y++) for (let x = 0; x < R - 1; x++) {
+      const a = grid[idx(x, y)], b = grid[idx(x + 1, y)];
+      const c = grid[idx(x, y + 1)], d = grid[idx(x + 1, y + 1)];
+      if (Math.min(a, d) > Math.max(b, c)) { grid[idx(x + 1, y)] = Math.min(a, d); changed = true; }
+      else if (Math.min(b, c) > Math.max(a, d)) { grid[idx(x, y)] = Math.min(b, c); changed = true; }
+    }
+    // c) Erode 1-wide spikes (only local maxima -> safe, no flooding)
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      const s = grid[idx(x, y)]; if (s === 0) continue;
+      const n = sAt(x, y - 1), e = sAt(x + 1, y), so = sAt(x, y + 1), w = sAt(x - 1, y);
+      if (Math.max(n, e, so, w) > s) continue;                 // has a higher neighbour -> leave it
+      const mask = (n < s ? 1 : 0) | (e < s ? 2 : 0) | (so < s ? 4 : 0) | (w < s ? 8 : 0);
+      if (!ONE_WIDE_MASK.has(mask)) continue;
+      grid[idx(x, y)] = Math.max(n < s ? n : 0, e < s ? e : 0, so < s ? so : 0, w < s ? w : 0);
+      changed = true;
+    }
+  }
+}
+
+// Build the snapped (and optionally cleaned) step grid — shared by render + export
+function computeStepGrid(P) {
+  const R = P.res;
+  const field = buildField(P);
+  const levels = levelsFor(P);
+  const nSteps = levels.length;
+  const stepGrid = new Int16Array(R * R);
+  for (let y = 0; y < R; y++) {
+    for (let x = 0; x < R; x++) {
+      const h = field[y * R + x];
+      let s = 0;
+      while (s < nSteps && h > levels[s]) s++;
+      stepGrid[y * R + x] = s;
+    }
+  }
+  if (P.clean) cleanCliffs(stepGrid, R);
+  return { R, stepGrid, nSteps };
+}
+
+function render() {
+  const P = readParams();
+  const t0 = performance.now();
+  const R = P.res, z = P.zoom;
+
+  cv.width = R * z; cv.height = R * z;
+  ctx.imageSmoothingEnabled = false;
+
+  const { stepGrid, nSteps } = computeStepGrid(P);
+  const sAt = makeSAt(stepGrid, R);
+
+  if (P.view === 'cliff') {
+    // Background, then only the cliff/border tiles classified by edge direction
+    ctx.fillStyle = '#11161c';
+    ctx.fillRect(0, 0, R * z, R * z);
+    for (let y = 0; y < R; y++) {
+      for (let x = 0; x < R; x++) {
+        const c = classifyCliff(stepGrid, sAt, x, y, R);
+        if (!c) continue;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(x * z, y * z, z, z);
+      }
+    }
+  } else if (P.view === 'contour') {
+    // Background, then only the outermost ring of each plateau (the step contour)
+    ctx.fillStyle = '#11161c';
+    ctx.fillRect(0, 0, R * z, R * z);
+    for (let y = 0; y < R; y++) {
+      for (let x = 0; x < R; x++) {
+        const s = stepGrid[y * R + x];
+        if (s === 0) continue;
+        // contour tile = belongs to step s but touches a lower neighbour on ANY of
+        // the 8 sides. Including diagonals fills the "between" tiles so a diagonal
+        // run reads as a solid L-staircase instead of a dotted "/".
+        if (sAt(x, y - 1) < s || sAt(x + 1, y) < s || sAt(x, y + 1) < s || sAt(x - 1, y) < s ||
+            sAt(x - 1, y - 1) < s || sAt(x + 1, y - 1) < s || sAt(x - 1, y + 1) < s || sAt(x + 1, y + 1) < s) {
+          ctx.fillStyle = paletteColor(s / nSteps);
+          ctx.fillRect(x * z, y * z, z, z);
+        }
+      }
+    }
+  } else {
+    // Terraced fill (default)
+    for (let y = 0; y < R; y++) {
+      for (let x = 0; x < R; x++) {
+        ctx.fillStyle = paletteColor(stepGrid[y * R + x] / nSteps);
+        ctx.fillRect(x * z, y * z, z, z);
+      }
+    }
+  }
+
+  // Step outlines: draw a border where a tile's step differs from its up/left neighbour
+  if (P.outline && P.view !== 'cliff') {
+    ctx.fillStyle = 'rgba(20,28,38,0.55)';
+    const t = Math.max(1, Math.round(z / 6));
+    for (let y = 0; y < R; y++) {
+      for (let x = 0; x < R; x++) {
+        const s = stepGrid[y * R + x];
+        if (x > 0 && stepGrid[y * R + x - 1] !== s) ctx.fillRect(x * z, y * z, t, z);
+        if (y > 0 && stepGrid[(y - 1) * R + x] !== s) ctx.fillRect(x * z, y * z, z, t);
+      }
+    }
+  }
+
+  // Tile grid lines
+  if (P.gridlines && z >= 4) {
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= R; i++) {
+      const p = i * z + 0.5;
+      ctx.moveTo(p, 0); ctx.lineTo(p, R * z);
+      ctx.moveTo(0, p); ctx.lineTo(R * z, p);
+    }
+    ctx.stroke();
+  }
+
+  // Cliff legend (only in cliff view)
+  const legend = document.getElementById('legend');
+  if (P.view === 'cliff') {
+    legend.innerHTML = Object.values(CLIFF_TYPES).map((t) =>
+      `<div class="item"><span class="sw" style="background:${t.color}"></span>${t.name}</div>`
+    ).join('');
+    legend.classList.add('on');
+  } else {
+    legend.classList.remove('on');
+  }
+
+  const ms = (performance.now() - t0).toFixed(0);
+  document.getElementById('meta').textContent =
+    `${P.algo} · ${P.steps} steps · ${R}×${R} tiles · ${R * z}px · ${ms} ms`;
+}
+
+/* =====================================================================
+   Export — per-tile step level + Factorio cliff name as JSON
+   ===================================================================== */
+function exportJSON() {
+  const P = readParams();
+  const { R, stepGrid, nSteps } = computeStepGrid(P);
+  const sAt = makeSAt(stepGrid, R);
+
+  const steps = [], cliffs = [];
+  let invalid = 0;
+  for (let y = 0; y < R; y++) {
+    const rowS = [], rowC = [];
+    for (let x = 0; x < R; x++) {
+      rowS.push(stepGrid[y * R + x]);
+      const c = classifyCliff(stepGrid, sAt, x, y, R);
+      if (!c) { rowC.push(null); }
+      else { rowC.push(c.id); if (c.id === null) invalid++; }
+    }
+    steps.push(rowS); cliffs.push(rowC);
+  }
+
+  const data = {
+    meta: {
+      generated: new Date().toISOString(),
+      size: R, levels: nSteps + 1, steps: nSteps,
+      cleaned: P.clean, invalidCliffTiles: invalid,
+      generator: {
+        algo: P.algo, seed: P.seed, spacing: P.spacing,
+        freq: P.freq, oct: P.oct, pers: P.pers, lac: P.lac, rough: P.rough,
+        fall: P.fall, rad: P.rad, sharp: P.sharp,
+        stretch: P.stretch, rot: P.rot, edge: P.edge, edgeScale: P.edgeScale,
+        warp: P.warp, warpScale: P.warpScale,
+      },
+    },
+    // steps[y][x] = elevation level (0 = base). cliffs[y][x] = Factorio cliff
+    // name on that tile, or null if it is not a cliff edge.
+    steps, cliffs,
+  };
+
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.download = `mountain-${P.seed}-${R}x${R}.json`;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* =====================================================================
+   Param wiring
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+function readParams() {
+  return {
+    res: +$('res').value, zoom: +$('zoom').value, view: $('view').value,
+    gridlines: $('gridlines').checked, outline: $('outline').checked, clean: $('clean').checked,
+    steps: +$('steps').value, spacing: $('spacing').value,
+    algo: $('algo').value,
+    freq: +$('freq').value, oct: +$('oct').value, pers: +$('pers').value, lac: +$('lac').value,
+    rough: +$('rough').value,
+    fall: +$('fall').value, rad: +$('rad').value, sharp: +$('sharp').value,
+    stretch: +$('stretch').value, rot: +$('rot').value,
+    edge: +$('edge').value, edgeScale: +$('edgeScale').value,
+    warp: +$('warp').value, warpScale: +$('warpScale').value,
+    seed: +$('seed').value | 0,
+  };
+}
+
+// live value labels
+const labelMap = {
+  res: 'vRes', zoom: 'vZoom', steps: 'vSteps',
+  freq: 'vFreq', oct: 'vOct', pers: 'vPers', lac: 'vLac', rough: 'vRough',
+  fall: 'vFall', rad: 'vRad', sharp: 'vSharp',
+  stretch: 'vStretch', rot: 'vRot', edge: 'vEdge', edgeScale: 'vEdgeScale',
+  warp: 'vWarp', warpScale: 'vWarpScale',
+};
+const fmt = {
+  pers: 2, lac: 1, freq: 1, rough: 2, fall: 1, rad: 2, sharp: 1,
+  stretch: 1, rot: 2, edge: 2, edgeScale: 1, warp: 2, warpScale: 1,
+};
+function syncLabels() {
+  for (const [id, lid] of Object.entries(labelMap)) {
+    const el = $(id); const lab = $(lid);
+    if (el && lab) lab.textContent = fmt[id] != null ? (+el.value).toFixed(fmt[id]) : el.value;
+  }
+}
+
+function showAlgoParams() {
+  const a = $('algo').value;
+  document.querySelectorAll('.algo-params').forEach((el) => {
+    el.classList.toggle('active', el.dataset.for.split(' ').includes(a));
+  });
+}
+
+function maybeRender() { if ($('auto').checked) render(); }
+
+// hook up all inputs
+document.querySelectorAll('input, select').forEach((el) => {
+  el.addEventListener('input', () => { syncLabels(); maybeRender(); });
+});
+$('algo').addEventListener('change', () => { showAlgoParams(); maybeRender(); });
+$('regen').addEventListener('click', render);
+$('rnd').addEventListener('click', () => {
+  $('seed').value = (Math.random() * 1e6) | 0; render();
+});
+$('rndShape').addEventListener('click', () => {
+  const rr = (min, max) => min + Math.random() * (max - min);
+  $('seed').value = (Math.random() * 1e6) | 0;
+  $('stretch').value = rr(-0.7, 0.7).toFixed(2);
+  $('rot').value = rr(0, 1).toFixed(2);
+  $('edge').value = rr(0.1, 0.8).toFixed(2);
+  $('edgeScale').value = rr(0.8, 3.5).toFixed(1);
+  $('warp').value = rr(0.05, 0.45).toFixed(2);
+  $('warpScale').value = rr(1, 4).toFixed(1);
+  syncLabels(); render();
+});
+$('png').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.download = 'stepped-mountain.png';
+  a.href = cv.toDataURL('image/png');
+  a.click();
+});
+$('json').addEventListener('click', exportJSON);
+
+// init
+syncLabels();
+showAlgoParams();
+render();
+</script>
+</body>
+</html>
