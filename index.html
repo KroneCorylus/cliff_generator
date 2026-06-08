@@ -112,12 +112,21 @@
 
     <div id="tab-params">
     <fieldset>
+      <legend>Shape mode</legend>
+      <div class="row">
+        <select id="mode">
+          <option value="single">Single mountain</option>
+          <option value="range" selected>Mountain range</option>
+        </select>
+      </div>
+    </fieldset>
+    <fieldset>
       <legend>Tile grid</legend>
       <div class="row">
         <label>View mode</label>
         <select id="view">
           <option value="fill">Terraced fill</option>
-          <option value="contour">Contour tiles only</option>
+          <option value="contour" selected>Contour tiles only</option>
           <option value="cliff">Cliff borders (autotile)</option>
         </select>
         <div class="hint">Contour = outer ring of each step. Cliff = border tiles by type.</div>
@@ -126,11 +135,6 @@
         <label>Grid size (tiles) <span class="val" id="vRes">64</span></label>
         <input type="range" id="res" min="8" max="256" step="1" value="64" />
         <div class="hint">Square map, e.g. 64 = 64×64 tiles.</div>
-      </div>
-      <div class="row">
-        <label>Zoom (px / tile) <span class="val" id="vZoom">9</span></label>
-        <input type="range" id="zoom" min="1" max="32" step="1" value="9" />
-        <div class="hint">Pixel-art scale of each tile on screen.</div>
       </div>
       <div class="row check">
         <input type="checkbox" id="gridlines" />
@@ -212,17 +216,17 @@
       </div>
     </fieldset>
 
-    <fieldset>
-      <legend>Single mountain shaping</legend>
+    <fieldset id="fs-shaping">
+      <legend id="legend-shaping">Single mountain shaping</legend>
       <div class="row">
-        <label>Radial falloff <span class="val" id="vFall">2.2</span></label>
+        <label><span id="lbl-fall">Radial falloff</span> <span class="val" id="vFall">2.2</span></label>
         <input type="range" id="fall" min="0" max="6" step="0.1" value="2.2" />
-        <div class="hint">Pulls terrain into one central peak. 0 = none.</div>
+        <div class="hint" id="hint-fall">Pulls terrain into one central peak. 0 = none.</div>
       </div>
       <div class="row">
-        <label>Mountain radius <span class="val" id="vRad">0.85</span></label>
+        <label><span id="lbl-rad">Mountain radius</span> <span class="val" id="vRad">0.85</span></label>
         <input type="range" id="rad" min="0.3" max="1.2" step="0.05" value="0.85" />
-        <div class="hint">Fraction of the canvas the mountain occupies.</div>
+        <div class="hint" id="hint-rad">Fraction of the canvas the mountain occupies.</div>
       </div>
       <div class="row">
         <label>Peak sharpness <span class="val" id="vSharp">1.0</span></label>
@@ -233,15 +237,20 @@
 
     <fieldset>
       <legend>Shape variety</legend>
-      <div class="row">
+      <div class="row" id="row-stretch">
         <label>Stretch <span class="val" id="vStretch">0.0</span></label>
         <input type="range" id="stretch" min="-0.7" max="0.7" step="0.05" value="0" />
         <div class="hint">Elongate the mountain into a wide / ridge shape.</div>
       </div>
+      <div class="row" id="row-rangeWidth" style="display:none">
+        <label>Range width (tiles) <span class="val" id="vRangeWidth">15</span></label>
+        <input type="range" id="rangeWidth" min="2" max="60" step="1" value="15" />
+        <div class="hint">Capsule radius — how wide the ridge is.</div>
+      </div>
       <div class="row">
-        <label>Rotation <span class="val" id="vRot">0.00</span></label>
+        <label><span id="lbl-rot">Rotation</span> <span class="val" id="vRot">0.00</span></label>
         <input type="range" id="rot" min="0" max="1" step="0.02" value="0" />
-        <div class="hint">Orientation of the stretch (0–180°).</div>
+        <div class="hint" id="hint-rot">Orientation of the stretch (0–180°).</div>
       </div>
       <div class="row">
         <label>Edge irregularity <span class="val" id="vEdge">0.35</span></label>
@@ -442,6 +451,14 @@ function makeDiamondSquare(seed, roughness) {
   };
 }
 
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 /* =====================================================================
    Heightfield builder — fills a res x res Float32Array in [0,1]
    ===================================================================== */
@@ -501,18 +518,24 @@ function buildField(P) {
       let h = gen(su, sv);                       // ~[-1,1]
       h = (h + 1) * 0.5;                         // -> [0,1]
 
-      // Radial falloff: isolate ONE mountain, but with stretch + irregular edge
+      // Falloff: shape into single mountain or range
       if (P.fall > 0) {
-        let dx = u - 0.5, dy = v - 0.5;
-        const rx = (dx * ca + dy * sa) / fx;     // rotate + anisotropic scale
-        const ry = (-dx * sa + dy * ca) / fy;
-        let d = Math.hypot(rx, ry) / 0.5;        // 0 center .. ~1 edge
-        // Edge irregularity: low-freq lumps push the outline in/out by direction
+        let d;
+        if (P.mode === 'range') {
+          const hl = P.rad * 0.45;               // half-length in [0,1] space
+          const x1 = 0.5 - hl * ca, y1 = 0.5 - hl * sa;
+          const x2 = 0.5 + hl * ca, y2 = 0.5 + hl * sa;
+          const wn = P.rangeWidth / P.res;       // capsule radius in [0,1] space
+          d = distToSegment(u, v, x1, y1, x2, y2) / Math.max(wn, 0.001);
+        } else {
+          const rx = (( u-0.5) * ca + (v-0.5) * sa) / fx;
+          const ry = (-(u-0.5) * sa + (v-0.5) * ca) / fy;
+          d = Math.hypot(rx, ry) / 0.5 / P.rad;
+        }
         if (P.edge > 0) {
           d *= 1 + P.edge * edgeN(u * P.edgeScale + 3.1, v * P.edgeScale + 9.4);
         }
-        const t = clamp01(d / P.rad);
-        const mask = clamp01(1 - Math.pow(t, P.fall));
+        const mask = clamp01(1 - Math.pow(clamp01(d), P.fall));
         h *= mask;
       }
       const idx = j * R + i;
@@ -901,7 +924,7 @@ function render() {
 
   const ms = (performance.now() - t0).toFixed(0);
   document.getElementById('meta').textContent =
-    `${P.algo} · ${P.steps} steps · ${R}×${R} tiles · ${R * z}px · ${ms} ms`;
+    `${P.algo} · ${P.steps} steps · ${R}×${R} cells (${R*4}×${R*4} tiles) · ${z} px/cell · ${ms} ms`;
 
   buildStepList(P);
 }
@@ -949,7 +972,7 @@ function exportMap() {
 const $ = (id) => document.getElementById(id);
 function readParams() {
   return {
-    res: +$('res').value, zoom: +$('zoom').value, view: $('view').value,
+    res: +$('res').value, zoom: 9, view: $('view').value,
     gridlines: $('gridlines').checked, outline: $('outline').checked, clean: $('clean').checked,
     steps: +$('steps').value, spacing: $('spacing').value,
     algo: $('algo').value,
@@ -960,20 +983,24 @@ function readParams() {
     edge: +$('edge').value, edgeScale: +$('edgeScale').value,
     warp: +$('warp').value, warpScale: +$('warpScale').value,
     seed: +$('seed').value | 0,
+    mode: $('mode').value,
+    rangeWidth: +$('rangeWidth').value,
   };
 }
 
 // live value labels
 const labelMap = {
-  res: 'vRes', zoom: 'vZoom', steps: 'vSteps',
+  res: 'vRes', steps: 'vSteps',
   freq: 'vFreq', oct: 'vOct', pers: 'vPers', lac: 'vLac', rough: 'vRough',
   fall: 'vFall', rad: 'vRad', sharp: 'vSharp',
   stretch: 'vStretch', rot: 'vRot', edge: 'vEdge', edgeScale: 'vEdgeScale',
   warp: 'vWarp', warpScale: 'vWarpScale',
+  rangeWidth: 'vRangeWidth',
 };
 const fmt = {
   pers: 2, lac: 1, freq: 1, rough: 2, fall: 1, rad: 2, sharp: 1,
   stretch: 1, rot: 2, edge: 2, edgeScale: 1, warp: 2, warpScale: 1,
+  rangeWidth: 0,
 };
 function syncLabels() {
   for (const [id, lid] of Object.entries(labelMap)) {
@@ -987,6 +1014,19 @@ function showAlgoParams() {
   document.querySelectorAll('.algo-params').forEach((el) => {
     el.classList.toggle('active', el.dataset.for.split(' ').includes(a));
   });
+}
+
+function showModeParams() {
+  const isRange = $('mode').value === 'range';
+  $('row-stretch').style.display    = isRange ? 'none' : '';
+  $('row-rangeWidth').style.display = isRange ? ''     : 'none';
+  $('legend-shaping').textContent   = isRange ? 'Range shaping'    : 'Single mountain shaping';
+  $('lbl-fall').textContent         = isRange ? 'Falloff power'    : 'Radial falloff';
+  $('hint-fall').textContent        = isRange ? 'Steepness of the capsule falloff. 0 = none.' : 'Pulls terrain into one central peak. 0 = none.';
+  $('lbl-rad').textContent          = isRange ? 'Range length'     : 'Mountain radius';
+  $('hint-rad').textContent         = isRange ? 'Spine half-length as fraction of canvas.' : 'Fraction of the canvas the mountain occupies.';
+  $('lbl-rot').textContent          = isRange ? 'Spine angle'      : 'Rotation';
+  $('hint-rot').textContent         = isRange ? 'Orientation of the mountain range (0–180°).' : 'Orientation of the stretch (0–180°).';
 }
 
 function maybeRender() { if ($('auto').checked) render(); }
@@ -1064,6 +1104,7 @@ document.querySelectorAll('input, select').forEach((el) => {
   el.addEventListener('input', () => { syncLabels(); saveState(); maybeRender(); });
 });
 $('algo').addEventListener('change', () => { showAlgoParams(); maybeRender(); });
+$('mode').addEventListener('change', () => { showModeParams(); saveState(); maybeRender(); });
 $('regen').addEventListener('click', render);
 $('rnd').addEventListener('click', () => {
   $('seed').value = (Math.random() * 1e6) | 0; saveState(); render();
@@ -1156,6 +1197,7 @@ function resetView() {
 loadState();
 syncLabels();
 showAlgoParams();
+showModeParams();
 render();
 </script>
 </body>
