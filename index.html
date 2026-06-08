@@ -298,6 +298,18 @@
       </div>
     </fieldset>
 
+    <fieldset>
+      <legend>Backend</legend>
+      <div class="row check">
+        <input type="checkbox" id="useBackend" />
+        <label style="display:inline">Generate with Lua backend</label>
+      </div>
+      <div class="row">
+        <input type="text" id="backendUrl" value="http://localhost:8770" />
+        <div class="hint">Run <code>lua server.lua</code>. When on, all generation comes from the Lua server (same logic, native speed; one network round-trip per change).</div>
+      </div>
+    </fieldset>
+
     <div class="btns">
       <button class="primary" id="regen">Regenerate</button>
       <button id="png">Save PNG</button>
@@ -837,29 +849,56 @@ function computeStepGrid(P) {
   return { R, stepGrid, nSteps };
 }
 
-function render() {
-  const P = readParams();
-  const t0 = performance.now();
-  const R = P.res, z = P.zoom;
-
-  // --- Compute all pipeline snapshots ---
-  const rawField    = buildField(Object.assign({}, P, { fall: 0 }));
+// Produce every pipeline snapshot, from the Lua backend or the in-page JS.
+// Both paths share identical logic (verified cell-for-cell).
+function pipelineJS(P) {
+  const R = P.res;
+  const rawField = buildField(Object.assign({}, P, { fall: 0 }));
   const shapedField = buildField(P);
-
-  const levels = levelsFor(P);
-  const nSteps = levels.length;
-
+  const levels = levelsFor(P), nSteps = levels.length;
   const precleanGrid = new Int16Array(R * R);
-  for (let y = 0; y < R; y++)
-    for (let x = 0; x < R; x++) {
-      const h = shapedField[y * R + x];
-      let s = 0; while (s < nSteps && h > levels[s]) s++;
-      precleanGrid[y * R + x] = s;
-    }
+  for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+    const h = shapedField[y * R + x];
+    let s = 0; while (s < nSteps && h > levels[s]) s++;
+    precleanGrid[y * R + x] = s;
+  }
   const cleanedGrid = new Int16Array(precleanGrid);
   cleanCliffs(cleanedGrid, R);
   const activeGrid = P.clean ? cleanedGrid : precleanGrid;
-  const cliffMap   = ringCliffs(activeGrid, R);
+  return { R, nSteps, rawField, shapedField, precleanGrid, cleanedGrid, cliffMap: ringCliffs(activeGrid, R) };
+}
+async function getPipeline(P) {
+  if (!$('useBackend').checked) return pipelineJS(P);
+  const url = $('backendUrl').value.replace(/\/+$/, '');
+  const res = await fetch(url + '/generate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(P),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const d = await res.json(), R = d.R;
+  const f32 = (a) => { const o = new Float32Array(R * R); for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) o[y * R + x] = a[y][x]; return o; };
+  const i16 = (a) => { const o = new Int16Array(R * R); for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) o[y * R + x] = a[y][x]; return o; };
+  const cliffMap = new Map();
+  for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) { const n = d.cliffs[y][x]; if (n) cliffMap.set(y * R + x, { name: n }); }
+  return { R, nSteps: d.nSteps, rawField: f32(d.rawField), shapedField: f32(d.shapedField), precleanGrid: i16(d.stepGrid), cleanedGrid: i16(d.cleanGrid), cliffMap };
+}
+
+let _renderSeq = 0;
+async function render() {
+  const P = readParams();
+  const t0 = performance.now();
+  const R = P.res, z = P.zoom;
+  const seq = ++_renderSeq;
+
+  let data;
+  try { data = await getPipeline(P); }
+  catch (e) {
+    document.getElementById('meta').textContent =
+      'Lua backend error: ' + e.message + ' — start `lua server.lua`, or uncheck "Generate with Lua backend".';
+    return;
+  }
+  if (seq !== _renderSeq) return;                 // a newer render superseded this one
+  const { rawField, shapedField, precleanGrid, cleanedGrid, nSteps, cliffMap } = data;
+  const activeGrid = P.clean ? cleanedGrid : precleanGrid;
 
   // --- Draw selected pipeline step ---
   cv.width = R * z; cv.height = R * z;
@@ -983,15 +1022,18 @@ function exportSettings() {
 
 // Map: only the tile matrices, no settings. steps[y][x] = elevation level (0 = base);
 // cliffs[y][x] = Factorio cliff tile name, or null if the tile is not a cliff edge.
-function exportMap() {
+async function exportMap() {
   const P = readParams();
-  const { R, stepGrid } = computeStepGrid(P);
-  const cliffMap = ringCliffs(stepGrid, R);
+  let data;
+  try { data = await getPipeline(P); }
+  catch (e) { alert('Lua backend error: ' + e.message); return; }
+  const { R, precleanGrid, cleanedGrid, cliffMap } = data;
+  const activeGrid = P.clean ? cleanedGrid : precleanGrid;
   const steps = [], cliffs = [];
   for (let y = 0; y < R; y++) {
     const rowS = [], rowC = [];
     for (let x = 0; x < R; x++) {
-      rowS.push(stepGrid[y * R + x]);
+      rowS.push(activeGrid[y * R + x]);
       const c = cliffMap.get(y * R + x);
       rowC.push(c ? c.name : null);
     }
@@ -1067,7 +1109,14 @@ function showModeParams() {
   $('hint-rot').textContent         = isRange ? 'Orientation of the mountain range (0–180°).' : 'Orientation of the stretch (0–180°).';
 }
 
-function maybeRender() { if ($('auto').checked) render(); }
+let _debTimer = null;
+function maybeRender() {
+  if (!$('auto').checked) return;
+  if ($('useBackend').checked) {           // debounce network round-trips on rapid input
+    clearTimeout(_debTimer);
+    _debTimer = setTimeout(render, 120);
+  } else render();
+}
 
 /* =====================================================================
    Pipeline step definitions + tab switching
