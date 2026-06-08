@@ -68,11 +68,13 @@
   .algo-params.active { display: block; }
 
   /* ---- Canvas area ---- */
-  #stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; }
-  #wrap { position: relative; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+  #stage { flex: 1; position: relative; overflow: hidden; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  #wrap { position: absolute; transform-origin: 0 0; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
   canvas { display: block; background: #1b2b3a; image-rendering: pixelated; image-rendering: crisp-edges; }
   #meta { position: fixed; bottom: 10px; right: 16px; color: var(--muted); font-size: 11px; }
-  #legend { display: none; flex-wrap: wrap; gap: 4px 14px; max-width: 640px; margin: 14px auto 0; }
+  #legend { display: none; position: fixed; bottom: 30px; left: 336px; right: 0;
+            flex-wrap: wrap; gap: 4px 14px; padding: 0 16px; pointer-events: none; }
   #legend.on { display: flex; }
   #legend .item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); width: 140px; }
   #legend .sw { width: 13px; height: 13px; border-radius: 3px; border: 1px solid rgba(255,255,255,.15); flex: 0 0 auto; }
@@ -267,12 +269,10 @@
   </div>
 
   <div id="stage">
-    <div>
-      <div id="wrap"><canvas id="cv"></canvas></div>
-      <div id="legend"></div>
-    </div>
+    <div id="wrap"><canvas id="cv"></canvas></div>
   </div>
 </div>
+<div id="legend"></div>
 <div id="meta"></div>
 
 <script>
@@ -754,6 +754,8 @@ function render() {
 
   cv.width = R * z; cv.height = R * z;
   ctx.imageSmoothingEnabled = false;
+  // defer resetView so the DOM has updated offsetWidth/Height
+  requestAnimationFrame(resetView);
 
   const { stepGrid, nSteps } = computeStepGrid(P);
   const sAt = makeSAt(stepGrid, R);
@@ -952,6 +954,56 @@ $('png').addEventListener('click', () => {
 });
 $('expSettings').addEventListener('click', exportSettings);
 $('expMap').addEventListener('click', exportMap);
+
+/* =====================================================================
+   Pan / zoom
+   ===================================================================== */
+let _vpZoom = 1, _vpX = 0, _vpY = 0;
+
+function applyTransform() {
+  $('wrap').style.transform = `translate(${_vpX}px,${_vpY}px) scale(${_vpZoom})`;
+}
+
+function resetView() {
+  const stage = $('stage'), wrap = $('wrap');
+  _vpZoom = 1;
+  _vpX = (stage.clientWidth  - wrap.offsetWidth)  / 2;
+  _vpY = (stage.clientHeight - wrap.offsetHeight) / 2;
+  applyTransform();
+}
+
+(function () {
+  const stage = $('stage');
+
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    const rect   = stage.getBoundingClientRect();
+    const mx     = e.clientX - rect.left;
+    const my     = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+    _vpX  = mx + (_vpX - mx) * factor;
+    _vpY  = my + (_vpY - my) * factor;
+    _vpZoom = Math.max(0.2, Math.min(_vpZoom * factor, 40));
+    applyTransform();
+  }, { passive: false });
+
+  let dragging = false, dx = 0, dy = 0, px = 0, py = 0;
+  stage.addEventListener('mousedown', function (e) {
+    dragging = true; dx = e.clientX; dy = e.clientY; px = _vpX; py = _vpY;
+    stage.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    _vpX = px + e.clientX - dx;
+    _vpY = py + e.clientY - dy;
+    applyTransform();
+  });
+  window.addEventListener('mouseup', function () {
+    if (dragging) { dragging = false; stage.classList.remove('dragging'); }
+  });
+  stage.addEventListener('dblclick', resetView);
+})();
 
 // init
 syncLabels();
