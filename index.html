@@ -247,6 +247,16 @@
         <input type="range" id="rangeWidth" min="2" max="60" step="1" value="15" />
         <div class="hint">Capsule radius — how wide the ridge is.</div>
       </div>
+      <div class="row" id="row-spineWarp" style="display:none">
+        <label>Spine warp <span class="val" id="vSpineWarp">0.00</span></label>
+        <input type="range" id="spineWarp" min="0" max="0.3" step="0.01" value="0" />
+        <div class="hint">Lateral displacement amplitude — snakes the ridge path.</div>
+      </div>
+      <div class="row" id="row-spineWarpScale" style="display:none">
+        <label>Spine warp scale <span class="val" id="vSpineWarpScale">1.0</span></label>
+        <input type="range" id="spineWarpScale" min="0.25" max="2" step="0.25" value="1" />
+        <div class="hint">1 = one arch, 2 = one S-shape.</div>
+      </div>
       <div class="row">
         <label><span id="lbl-rot">Rotation</span> <span class="val" id="vRot">0.00</span></label>
         <input type="range" id="rot" min="0" max="1" step="0.02" value="0" />
@@ -503,6 +513,29 @@ function buildField(P) {
   const fx = Math.max(0.3, 1 + P.stretch);   // axis radii (stretch in [-1,1])
   const fy = Math.max(0.3, 1 - P.stretch);
 
+  // Precompute warped spine polyline for range mode (avoids recomputing per pixel)
+  let spinePts = null, spineWn = 0;
+  if (P.mode === 'range' && P.fall > 0) {
+    const hl = P.rad * 0.45;
+    const x1 = 0.5 - hl * ca, y1 = 0.5 - hl * sa;
+    const x2 = 0.5 + hl * ca, y2 = 0.5 + hl * sa;
+    spineWn = P.rangeWidth / P.res;
+    const N = 24;
+    spinePts = new Float32Array((N + 1) * 2);
+    for (let k = 0; k <= N; k++) {
+      const t = k / N;
+      let bx = x1 + t * (x2 - x1);
+      let by = y1 + t * (y2 - y1);
+      if (P.spineWarp > 0) {
+        const disp = P.spineWarp * Math.sin(t * Math.PI * P.spineWarpScale);
+        bx += disp * (-sa);
+        by += disp * ca;
+      }
+      spinePts[k * 2]     = bx;
+      spinePts[k * 2 + 1] = by;
+    }
+  }
+
   let min = Infinity, max = -Infinity;
   for (let j = 0; j < R; j++) {
     const v = j / (R - 1);
@@ -522,11 +555,12 @@ function buildField(P) {
       if (P.fall > 0) {
         let d;
         if (P.mode === 'range') {
-          const hl = P.rad * 0.45;               // half-length in [0,1] space
-          const x1 = 0.5 - hl * ca, y1 = 0.5 - hl * sa;
-          const x2 = 0.5 + hl * ca, y2 = 0.5 + hl * sa;
-          const wn = P.rangeWidth / P.res;       // capsule radius in [0,1] space
-          d = distToSegment(u, v, x1, y1, x2, y2) / Math.max(wn, 0.001);
+          let minD = Infinity;
+          for (let k = 0; k < spinePts.length / 2 - 1; k++) {
+            const dd = distToSegment(u, v, spinePts[k*2], spinePts[k*2+1], spinePts[k*2+2], spinePts[k*2+3]);
+            if (dd < minD) minD = dd;
+          }
+          d = minD / Math.max(spineWn, 0.001);
         } else {
           const rx = (( u-0.5) * ca + (v-0.5) * sa) / fx;
           const ry = (-(u-0.5) * sa + (v-0.5) * ca) / fy;
@@ -985,6 +1019,8 @@ function readParams() {
     seed: +$('seed').value | 0,
     mode: $('mode').value,
     rangeWidth: +$('rangeWidth').value,
+    spineWarp: +$('spineWarp').value,
+    spineWarpScale: +$('spineWarpScale').value,
   };
 }
 
@@ -995,12 +1031,12 @@ const labelMap = {
   fall: 'vFall', rad: 'vRad', sharp: 'vSharp',
   stretch: 'vStretch', rot: 'vRot', edge: 'vEdge', edgeScale: 'vEdgeScale',
   warp: 'vWarp', warpScale: 'vWarpScale',
-  rangeWidth: 'vRangeWidth',
+  rangeWidth: 'vRangeWidth', spineWarp: 'vSpineWarp', spineWarpScale: 'vSpineWarpScale',
 };
 const fmt = {
   pers: 2, lac: 1, freq: 1, rough: 2, fall: 1, rad: 2, sharp: 1,
   stretch: 1, rot: 2, edge: 2, edgeScale: 1, warp: 2, warpScale: 1,
-  rangeWidth: 0,
+  rangeWidth: 0, spineWarp: 2, spineWarpScale: 1,
 };
 function syncLabels() {
   for (const [id, lid] of Object.entries(labelMap)) {
@@ -1018,8 +1054,10 @@ function showAlgoParams() {
 
 function showModeParams() {
   const isRange = $('mode').value === 'range';
-  $('row-stretch').style.display    = isRange ? 'none' : '';
-  $('row-rangeWidth').style.display = isRange ? ''     : 'none';
+  $('row-stretch').style.display        = isRange ? 'none' : '';
+  $('row-rangeWidth').style.display     = isRange ? ''     : 'none';
+  $('row-spineWarp').style.display      = isRange ? ''     : 'none';
+  $('row-spineWarpScale').style.display = isRange ? ''     : 'none';
   $('legend-shaping').textContent   = isRange ? 'Range shaping'    : 'Single mountain shaping';
   $('lbl-fall').textContent         = isRange ? 'Falloff power'    : 'Radial falloff';
   $('hint-fall').textContent        = isRange ? 'Steepness of the capsule falloff. 0 = none.' : 'Pulls terrain into one central peak. 0 = none.';
