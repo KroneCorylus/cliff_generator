@@ -257,7 +257,8 @@
       <button id="png">Save PNG</button>
     </div>
     <div class="btns" style="margin-top:8px">
-      <button id="json">Export JSON</button>
+      <button id="expSettings">Export settings</button>
+      <button id="expMap">Export map</button>
     </div>
     <div class="row check" style="margin-top:10px">
       <input type="checkbox" id="auto" checked />
@@ -839,13 +840,29 @@ function render() {
 }
 
 /* =====================================================================
-   Export — per-tile step level + Factorio cliff name as JSON
+   Export — settings (params only) and map (tile matrices only), separately
    ===================================================================== */
-function exportJSON() {
-  const P = readParams();
-  const { R, stepGrid, nSteps } = computeStepGrid(P);
-  const cliffMap = ringCliffs(stepGrid, R);
+function downloadJSON(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.download = filename;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
+// Settings: every generator parameter, no tile data. Re-import to reproduce a map.
+function exportSettings() {
+  const P = readParams();
+  downloadJSON(P, `mountain-settings-${P.seed}.json`);
+}
+
+// Map: only the tile matrices, no settings. steps[y][x] = elevation level (0 = base);
+// cliffs[y][x] = Factorio cliff tile name, or null if the tile is not a cliff edge.
+function exportMap() {
+  const P = readParams();
+  const { R, stepGrid } = computeStepGrid(P);
+  const cliffMap = ringCliffs(stepGrid, R);
   const steps = [], cliffs = [];
   for (let y = 0; y < R; y++) {
     const rowS = [], rowC = [];
@@ -856,31 +873,7 @@ function exportJSON() {
     }
     steps.push(rowS); cliffs.push(rowC);
   }
-
-  const data = {
-    meta: {
-      generated: new Date().toISOString(),
-      size: R, levels: nSteps + 1, steps: nSteps,
-      cleaned: P.clean, cliffTiles: cliffMap.size,
-      generator: {
-        algo: P.algo, seed: P.seed, spacing: P.spacing,
-        freq: P.freq, oct: P.oct, pers: P.pers, lac: P.lac, rough: P.rough,
-        fall: P.fall, rad: P.rad, sharp: P.sharp,
-        stretch: P.stretch, rot: P.rot, edge: P.edge, edgeScale: P.edgeScale,
-        warp: P.warp, warpScale: P.warpScale,
-      },
-    },
-    // steps[y][x] = elevation level (0 = base). cliffs[y][x] = Factorio cliff
-    // name on that tile, or null if it is not a cliff edge.
-    steps, cliffs,
-  };
-
-  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.download = `mountain-${P.seed}-${R}x${R}.json`;
-  a.href = URL.createObjectURL(blob);
-  a.click();
-  URL.revokeObjectURL(a.href);
+  downloadJSON({ steps, cliffs }, `mountain-map-${P.seed}-${R}x${R}.json`);
 }
 
 /* =====================================================================
@@ -957,7 +950,8 @@ $('png').addEventListener('click', () => {
   a.href = cv.toDataURL('image/png');
   a.click();
 });
-$('json').addEventListener('click', exportJSON);
+$('expSettings').addEventListener('click', exportSettings);
+$('expMap').addEventListener('click', exportMap);
 
 // init
 syncLabels();
