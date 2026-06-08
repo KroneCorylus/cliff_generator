@@ -558,26 +558,22 @@ const CLIFF_TYPES = {
   tip:     { name: 'peninsula tip (no tile)', id: null, color: '#ffffff' },
   pillar:  { name: 'pillar (no tile)',        id: null, color: '#dfe3e8' },
 };
-const CLIFF_OUTER = {
-  1: CLIFF_TYPES.wallN, 2: CLIFF_TYPES.wallE, 4: CLIFF_TYPES.wallS, 8: CLIFF_TYPES.wallW,
-  3: CLIFF_TYPES.outNE, 6: CLIFF_TYPES.outSE, 12: CLIFF_TYPES.outSW, 9: CLIFF_TYPES.outNW,
-  5: CLIFF_TYPES.ridgeNS, 10: CLIFF_TYPES.ridgeEW,
-  7: CLIFF_TYPES.tip, 11: CLIFF_TYPES.tip, 13: CLIFF_TYPES.tip, 14: CLIFF_TYPES.tip,
-  15: CLIFF_TYPES.pillar,
-};
-function classifyCliff(grid, sAt, x, y, R) {
-  const s = grid[y * R + x];
-  const mask =
-    (sAt(x, y - 1) < s ? 1 : 0) | (sAt(x + 1, y) < s ? 2 : 0) |
-    (sAt(x, y + 1) < s ? 4 : 0) | (sAt(x - 1, y) < s ? 8 : 0);
-  if (mask) return CLIFF_OUTER[mask];
-  // No orthogonal cliff: check diagonals for concave (inner) corners
-  if (sAt(x + 1, y - 1) < s) return CLIFF_TYPES.inNE;
-  if (sAt(x + 1, y + 1) < s) return CLIFF_TYPES.inSE;
-  if (sAt(x - 1, y + 1) < s) return CLIFF_TYPES.inSW;
-  if (sAt(x - 1, y - 1) < s) return CLIFF_TYPES.inNW;
-  return null;
-}
+// Factorio cliff name -> colour (for rendering / legend)
+const NAME_COLOR = {};
+for (const t of Object.values(CLIFF_TYPES)) if (t.id) NAME_COLOR[t.id] = t.color;
+
+// Cliff sprite atlas (tiles.png): 16x16 tiles, 5 per row, in this name order.
+const TILE_ORDER = [
+  'east-to-south', 'north-to-east', 'west-to-south', 'north-to-west', 'east-to-north',
+  'south-to-east', 'west-to-north', 'south-to-west', 'east-to-west', 'west-to-east',
+  'north-to-south', 'south-to-north',
+];
+const TILE_SRC = {};
+TILE_ORDER.forEach((name, i) => { TILE_SRC[name] = { sx: (i % 5) * 16, sy: ((i / 5) | 0) * 16 }; });
+const TILE_ATLAS = new Image();
+let tilesReady = false;
+TILE_ATLAS.onload = () => { tilesReady = true; render(); };
+TILE_ATLAS.src = 'tiles.png';
 
 // Clamped neighbour sampler for a step grid (out-of-bounds = edge tile)
 function makeSAt(grid, R) {
@@ -587,39 +583,148 @@ function makeSAt(grid, R) {
 /* Cleanup pass -> remove the patterns that have no legal Factorio cliff tile.
    Each rule changes only a handful of cells, so terrain is preserved (no flooding).
      a) Staircase — raise valleys so no orthogonal neighbour is >1 level above.
-     b) Saddle fill — break diagonal pinches (H L / L H) by raising one low cell.
-     c) Erode — flatten a 1-wide spike (lower opposite/3+ sides) DOWN to its
-        surroundings, but only when it has no higher neighbour, so it neither
-        fights the staircase nor chains outward. */
+     b) Saddle / pinch fill — raise one cell to break a diagonal pinch (H L / L H
+        or one-diagonal-equal) so the cliff turns through an L, not a "/".
+     c) Bridge fill — raise a notch where the region is only 1-wide diagonally.
+   All rules only RAISE, so it is monotonic and always converges; it leaves room
+   for the L-corners that the ring tracer needs. */
 const ONE_WIDE_MASK = new Set([5, 10, 7, 11, 13, 14, 15]);
 function cleanCliffs(grid, R) {
   const sAt = makeSAt(grid, R);
   const idx = (x, y) => y * R + x;
-  for (let pass = 0, changed = true; changed && pass < 256; pass++) {
-    changed = false;
-    // a) Staircase
-    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
-      const t = Math.max(sAt(x, y - 1), sAt(x + 1, y), sAt(x, y + 1), sAt(x - 1, y)) - 1;
-      if (grid[idx(x, y)] < t) { grid[idx(x, y)] = t; changed = true; }
-    }
-    // b) Saddle fill (2x2 diagonal pinch)
-    for (let y = 0; y < R - 1; y++) for (let x = 0; x < R - 1; x++) {
-      const a = grid[idx(x, y)], b = grid[idx(x + 1, y)];
-      const c = grid[idx(x, y + 1)], d = grid[idx(x + 1, y + 1)];
-      if (Math.min(a, d) > Math.max(b, c)) { grid[idx(x + 1, y)] = Math.min(a, d); changed = true; }
-      else if (Math.min(b, c) > Math.max(a, d)) { grid[idx(x, y)] = Math.min(b, c); changed = true; }
-    }
-    // c) Erode 1-wide spikes (only local maxima -> safe, no flooding)
+  // Phase E: erode 1-wide spikes (local maxima with opposite/3+ lower sides).
+  const erode = () => {
+    let ch = false;
     for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
       const s = grid[idx(x, y)]; if (s === 0) continue;
       const n = sAt(x, y - 1), e = sAt(x + 1, y), so = sAt(x, y + 1), w = sAt(x - 1, y);
-      if (Math.max(n, e, so, w) > s) continue;                 // has a higher neighbour -> leave it
+      if (Math.max(n, e, so, w) > s) continue;                 // a strictly higher neighbour -> keep (no peel back into slope)
       const mask = (n < s ? 1 : 0) | (e < s ? 2 : 0) | (so < s ? 4 : 0) | (w < s ? 8 : 0);
-      if (!ONE_WIDE_MASK.has(mask)) continue;
+      if (!ONE_WIDE_MASK.has(mask)) continue;                  // not a 1-wide spike/ridge
       grid[idx(x, y)] = Math.max(n < s ? n : 0, e < s ? e : 0, so < s ? so : 0, w < s ? w : 0);
-      changed = true;
+      ch = true;
+    }
+    return ch;
+  };
+  // Phase R: raises only. 8-staircase (terraces >=1 wide even at corners) + saddle/
+  // pinch fill + diagonal-bridge fill -> leaves room for the tracer's L-corners.
+  const raise = () => {
+    let ch = false;
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      let m = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+        if (dx || dy) m = Math.max(m, sAt(x + dx, y + dy));
+      if (grid[idx(x, y)] < m - 1) { grid[idx(x, y)] = m - 1; ch = true; }
+    }
+    for (let y = 0; y < R - 1; y++) for (let x = 0; x < R - 1; x++) {
+      const a = grid[idx(x, y)], b = grid[idx(x + 1, y)];
+      const c = grid[idx(x, y + 1)], d = grid[idx(x + 1, y + 1)];
+      if (Math.min(a, d) > Math.max(b, c)) { grid[idx(x + 1, y)] = Math.min(a, d); ch = true; }
+      else if (Math.min(b, c) > Math.max(a, d)) { grid[idx(x, y)] = Math.min(b, c); ch = true; }
+      else if (b === c && a !== b && d !== b) {
+        if (a < b) { grid[idx(x, y)] = b; ch = true; } else if (d < b) { grid[idx(x + 1, y + 1)] = b; ch = true; }
+      } else if (a === d && b !== a && c !== a) {
+        if (b < a) { grid[idx(x + 1, y)] = a; ch = true; } else if (c < a) { grid[idx(x, y + 1)] = a; ch = true; }
+      }
+    }
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      const s = grid[idx(x, y)];
+      const n = sAt(x, y - 1), e = sAt(x + 1, y), so = sAt(x, y + 1), w = sAt(x - 1, y);
+      if (n < s || e < s || so < s || w < s) continue;
+      if (sAt(x - 1, y - 1) < s && sAt(x + 1, y + 1) < s) { grid[idx(x - 1, y - 1)] = Math.min(n, w); ch = true; }
+      else if (sAt(x + 1, y - 1) < s && sAt(x - 1, y + 1) < s) { grid[idx(x + 1, y - 1)] = Math.min(n, e); ch = true; }
+    }
+    return ch;
+  };
+  for (let outer = 0; outer < 16; outer++) {
+    let any = false, g;
+    g = 0; while (erode() && g++ < 256) any = true;
+    g = 0; while (raise() && g++ < 256) any = true;
+    if (!any) break;
+  }
+}
+
+/* Ring tracer: convert each elevation level's boundary into ordered cliff tiles.
+   Tracing keeps the high region on the LEFT, so each tile's Factorio name falls
+   straight out of the loop: name = <dir to previous tile>-to-<dir to next tile>.
+   Inner (concave) corners are inserted on the inside cell so they use a real
+   corner sprite instead of a diagonal gap. */
+const RING_DIRS = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
+const RING_LEFT = { E: 'N', N: 'W', W: 'S', S: 'E' };
+const RING_RIGHT = { E: 'S', S: 'W', W: 'N', N: 'E' };
+const RING_BACK = { E: 'W', W: 'E', N: 'S', S: 'N' };
+const dirName = ([dx, dy]) => dx === 1 ? 'east' : dx === -1 ? 'west' : dy === 1 ? 'south' : 'north';
+const leftCellOf = (cx, cy, d) => ({ E: [cx, cy - 1], N: [cx - 1, cy - 1], W: [cx - 1, cy], S: [cx, cy] })[d];
+const rightCellOf = (cx, cy, d) => ({ E: [cx, cy], N: [cx, cy - 1], W: [cx - 1, cy - 1], S: [cx - 1, cy] })[d];
+
+function traceRingLoops(inA, R) {
+  const ok = (cx, cy, d) => {
+    const [lx, ly] = leftCellOf(cx, cy, d), [rx, ry] = rightCellOf(cx, cy, d);
+    return inA(lx, ly) && !inA(rx, ry);
+  };
+  const seen = new Set(), key = (cx, cy, d) => cx + ',' + cy + ',' + d, loops = [];
+  for (let sy = 0; sy <= R; sy++) for (let sx = 0; sx <= R; sx++) for (const d0 of ['E', 'N', 'W', 'S']) {
+    if (!ok(sx, sy, d0) || seen.has(key(sx, sy, d0))) continue;
+    const owners = []; let cx = sx, cy = sy, d = d0;
+    for (let guard = 0; guard < R * R * 8; guard++) {
+      if (seen.has(key(cx, cy, d))) break;
+      seen.add(key(cx, cy, d));
+      owners.push(leftCellOf(cx, cy, d));
+      const nx = cx + RING_DIRS[d][0], ny = cy + RING_DIRS[d][1];
+      let pick = null;
+      for (const t of [RING_LEFT[d], d, RING_RIGHT[d], RING_BACK[d]]) if (ok(nx, ny, t)) { pick = t; break; }
+      if (!pick) break;
+      cx = nx; cy = ny; d = pick;
+    }
+    if (owners.length) loops.push(owners);
+  }
+  return loops;
+}
+
+function nameRingLoop(loop, inA) {
+  const dedup = (arr) => {
+    const s = [];
+    for (const c of arr) { const l = s[s.length - 1]; if (!l || l[0] !== c[0] || l[1] !== c[1]) s.push(c); }
+    if (s.length > 1) { const a = s[0], b = s[s.length - 1]; if (a[0] === b[0] && a[1] === b[1]) s.pop(); }
+    return s;
+  };
+  let seq = dedup(loop);
+  // Insert the inside cell wherever the loop steps diagonally (an inner corner)
+  const exp = [];
+  for (let i = 0; i < seq.length; i++) {
+    const c = seq[i], q = seq[(i + 1) % seq.length];
+    exp.push(c);
+    if (Math.abs(q[0] - c[0]) === 1 && Math.abs(q[1] - c[1]) === 1) {
+      const o1 = [c[0], q[1]], o2 = [q[0], c[1]];
+      exp.push(inA(o1[0], o1[1]) ? o1 : o2);
     }
   }
+  seq = dedup(exp);
+  const out = [], n = seq.length;
+  for (let i = 0; i < n; i++) {
+    const c = seq[i], p = seq[(i - 1 + n) % n], q = seq[(i + 1) % n];
+    out.push({ x: c[0], y: c[1], name: dirName([p[0] - c[0], p[1] - c[1]]) + '-to-' + dirName([q[0] - c[0], q[1] - c[1]]) });
+  }
+  return out;
+}
+
+// Build the per-tile cliff map by tracing every level innermost -> outermost.
+// Inner rings are placed first; an outer ring yields (skips) on an occupied tile.
+function ringCliffs(stepGrid, R) {
+  let maxL = 0;
+  for (let i = 0; i < stepGrid.length; i++) if (stepGrid[i] > maxL) maxL = stepGrid[i];
+  const cliff = new Map();
+  for (let L = maxL; L >= 1; L--) {
+    const inA = (x, y) => x >= 0 && y >= 0 && x < R && y < R && stepGrid[y * R + x] >= L;
+    for (const loop of traceRingLoops(inA, R)) {
+      for (const cell of nameRingLoop(loop, inA)) {
+        const k = cell.y * R + cell.x;
+        if (!NAME_COLOR[cell.name]) continue;       // skip degenerate (pillar) names
+        if (!cliff.has(k)) cliff.set(k, { name: cell.name, level: L });
+      }
+    }
+  }
+  return cliff;
 }
 
 // Build the snapped (and optionally cleaned) step grid — shared by render + export
@@ -653,16 +758,15 @@ function render() {
   const sAt = makeSAt(stepGrid, R);
 
   if (P.view === 'cliff') {
-    // Background, then only the cliff/border tiles classified by edge direction
+    // Background, then cliff tiles produced by tracing each ring into L-staircases
     ctx.fillStyle = '#11161c';
     ctx.fillRect(0, 0, R * z, R * z);
-    for (let y = 0; y < R; y++) {
-      for (let x = 0; x < R; x++) {
-        const c = classifyCliff(stepGrid, sAt, x, y, R);
-        if (!c) continue;
-        ctx.fillStyle = c.color;
-        ctx.fillRect(x * z, y * z, z, z);
-      }
+    for (const [k, c] of ringCliffs(stepGrid, R)) {
+      const x = k % R, y = (k - x) / R;
+      ctx.fillStyle = NAME_COLOR[c.name];
+      ctx.fillRect(x * z, y * z, z, z);
+      const src = tilesReady && TILE_SRC[c.name];
+      if (src) ctx.drawImage(TILE_ATLAS, src.sx, src.sy, 16, 16, x * z, y * z, z, z);
     }
   } else if (P.view === 'contour') {
     // Background, then only the outermost ring of each plateau (the step contour)
@@ -721,7 +825,7 @@ function render() {
   // Cliff legend (only in cliff view)
   const legend = document.getElementById('legend');
   if (P.view === 'cliff') {
-    legend.innerHTML = Object.values(CLIFF_TYPES).map((t) =>
+    legend.innerHTML = Object.values(CLIFF_TYPES).filter((t) => t.id).map((t) =>
       `<div class="item"><span class="sw" style="background:${t.color}"></span>${t.name}</div>`
     ).join('');
     legend.classList.add('on');
@@ -740,17 +844,15 @@ function render() {
 function exportJSON() {
   const P = readParams();
   const { R, stepGrid, nSteps } = computeStepGrid(P);
-  const sAt = makeSAt(stepGrid, R);
+  const cliffMap = ringCliffs(stepGrid, R);
 
   const steps = [], cliffs = [];
-  let invalid = 0;
   for (let y = 0; y < R; y++) {
     const rowS = [], rowC = [];
     for (let x = 0; x < R; x++) {
       rowS.push(stepGrid[y * R + x]);
-      const c = classifyCliff(stepGrid, sAt, x, y, R);
-      if (!c) { rowC.push(null); }
-      else { rowC.push(c.id); if (c.id === null) invalid++; }
+      const c = cliffMap.get(y * R + x);
+      rowC.push(c ? c.name : null);
     }
     steps.push(rowS); cliffs.push(rowC);
   }
@@ -759,7 +861,7 @@ function exportJSON() {
     meta: {
       generated: new Date().toISOString(),
       size: R, levels: nSteps + 1, steps: nSteps,
-      cleaned: P.clean, invalidCliffTiles: invalid,
+      cleaned: P.clean, cliffTiles: cliffMap.size,
       generator: {
         algo: P.algo, seed: P.seed, spacing: P.spacing,
         freq: P.freq, oct: P.oct, pers: P.pers, lac: P.lac, rough: P.rough,
