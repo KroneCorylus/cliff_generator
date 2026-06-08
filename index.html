@@ -830,7 +830,7 @@ function render() {
   // --- Draw selected pipeline step ---
   cv.width = R * z; cv.height = R * z;
   ctx.imageSmoothingEnabled = false;
-  requestAnimationFrame(resetView);
+  if (R !== _lastR) { _lastR = R; requestAnimationFrame(resetView); }
 
   const sid = _currentStep;
 
@@ -924,7 +924,7 @@ function render() {
 
   const ms = (performance.now() - t0).toFixed(0);
   document.getElementById('meta').textContent =
-    `${P.algo} · ${P.steps} steps · ${R}×${R} cells (${R*4}×${R*4} tiles) · ${z} px/cell · ${ms} ms`;
+    `${P.algo} · ${P.steps} steps · ${R}×${R} cells · ${R*4}×${R*4} tiles · ${R/8}×${R/8} chunks · ${ms} ms`;
 
   buildStepList(P);
 }
@@ -1042,6 +1042,7 @@ const PIPELINE_STEPS = [
   { id: 'ring_cliffs',  name: 'Ring cliffs',         desc: 'Traced cliff orientations',           type: 'cliff', optional: false },
 ];
 let _currentStep = null; // null = ring_cliffs (final)
+let _lastR = null;
 
 function switchTab(tab) {
   $('tab-params').style.display   = tab === 'params'   ? '' : 'none';
