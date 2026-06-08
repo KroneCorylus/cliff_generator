@@ -55,6 +55,25 @@
   .check { display: flex; align-items: center; gap: 7px; }
   .check input { accent-color: var(--accent); }
 
+  /* ---- Pipeline tab ---- */
+  .tab-bar { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 12px; gap: 0; }
+  .tab-btn-top { flex: 1; background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 4px; cursor: pointer; font-size: 12px; font-weight: 600;
+    margin-bottom: -1px; }
+  .tab-btn-top.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-btn-top:hover:not(.active) { color: var(--text); }
+  #tab-pipeline { display: none; flex-direction: column; gap: 2px; }
+  .step-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border-radius: 6px; cursor: pointer; border-left: 2px solid transparent; }
+  .step-item:hover { background: var(--panel-2); }
+  .step-item.active { background: rgba(88,166,255,0.08); border-left-color: var(--accent); }
+  .step-info { flex: 1; min-width: 0; }
+  .step-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .step-desc { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+  .step-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px;
+    background: var(--panel-2); color: var(--muted); flex-shrink: 0; }
+  .step-toggle { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+
   .btns { display: flex; gap: 8px; margin-top: 4px; }
   button {
     flex: 1; cursor: pointer; border: 1px solid var(--border);
@@ -86,6 +105,12 @@
     <h1>Stepped Mountain</h1>
     <div class="sub">Contour-only terraced mountain generator</div>
 
+    <div class="tab-bar">
+      <button class="tab-btn-top active" id="btn-params"   onclick="switchTab('params')">Parameters</button>
+      <button class="tab-btn-top"        id="btn-pipeline" onclick="switchTab('pipeline')">Pipeline</button>
+    </div>
+
+    <div id="tab-params">
     <fieldset>
       <legend>Tile grid</legend>
       <div class="row">
@@ -262,9 +287,17 @@
       <button id="expSettings">Export settings</button>
       <button id="expMap">Export map</button>
     </div>
+    <div class="btns" style="margin-top:8px">
+      <button id="defaults">Reset to defaults</button>
+    </div>
     <div class="row check" style="margin-top:10px">
       <input type="checkbox" id="auto" checked />
       <label style="display:inline">Live update on change</label>
+    </div>
+    </div><!-- #tab-params -->
+
+    <div id="tab-pipeline">
+      <div id="step-list"></div>
     </div>
   </div>
 
@@ -752,67 +785,97 @@ function render() {
   const t0 = performance.now();
   const R = P.res, z = P.zoom;
 
+  // --- Compute all pipeline snapshots ---
+  const rawField    = buildField(Object.assign({}, P, { fall: 0 }));
+  const shapedField = buildField(P);
+
+  const levels = levelsFor(P);
+  const nSteps = levels.length;
+
+  const precleanGrid = new Int16Array(R * R);
+  for (let y = 0; y < R; y++)
+    for (let x = 0; x < R; x++) {
+      const h = shapedField[y * R + x];
+      let s = 0; while (s < nSteps && h > levels[s]) s++;
+      precleanGrid[y * R + x] = s;
+    }
+  const cleanedGrid = new Int16Array(precleanGrid);
+  cleanCliffs(cleanedGrid, R);
+  const activeGrid = P.clean ? cleanedGrid : precleanGrid;
+  const cliffMap   = ringCliffs(activeGrid, R);
+
+  // --- Draw selected pipeline step ---
   cv.width = R * z; cv.height = R * z;
   ctx.imageSmoothingEnabled = false;
-  // defer resetView so the DOM has updated offsetWidth/Height
   requestAnimationFrame(resetView);
 
-  const { stepGrid, nSteps } = computeStepGrid(P);
-  const sAt = makeSAt(stepGrid, R);
+  const sid = _currentStep;
 
-  if (P.view === 'cliff') {
-    // Background, then cliff tiles produced by tracing each ring into L-staircases
+  if (sid === 'raw_field' || sid === 'shaped_field') {
+    const field = sid === 'raw_field' ? rawField : shapedField;
     ctx.fillStyle = '#11161c';
-    ctx.fillRect(0, 0, R * z, R * z);
-    for (const [k, c] of ringCliffs(stepGrid, R)) {
-      const x = k % R, y = (k - x) / R;
-      ctx.fillStyle = NAME_COLOR[c.name];
-      ctx.fillRect(x * z, y * z, z, z);
-      const src = tilesReady && TILE_SRC[c.name];
-      if (src) ctx.drawImage(TILE_ATLAS, src.sx, src.sy, 16, 16, x * z, y * z, z, z);
-    }
-  } else if (P.view === 'contour') {
-    // Background, then only the outermost ring of each plateau (the step contour)
-    ctx.fillStyle = '#11161c';
-    ctx.fillRect(0, 0, R * z, R * z);
-    for (let y = 0; y < R; y++) {
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    for (let y = 0; y < R; y++)
       for (let x = 0; x < R; x++) {
-        const s = stepGrid[y * R + x];
-        if (s === 0) continue;
-        // contour tile = belongs to step s but touches a lower neighbour on ANY of
-        // the 8 sides. Including diagonals fills the "between" tiles so a diagonal
-        // run reads as a solid L-staircase instead of a dotted "/".
-        if (sAt(x, y - 1) < s || sAt(x + 1, y) < s || sAt(x, y + 1) < s || sAt(x - 1, y) < s ||
-            sAt(x - 1, y - 1) < s || sAt(x + 1, y - 1) < s || sAt(x - 1, y + 1) < s || sAt(x + 1, y + 1) < s) {
-          ctx.fillStyle = paletteColor(s / nSteps);
-          ctx.fillRect(x * z, y * z, z, z);
-        }
-      }
-    }
-  } else {
-    // Terraced fill (default)
-    for (let y = 0; y < R; y++) {
-      for (let x = 0; x < R; x++) {
-        ctx.fillStyle = paletteColor(stepGrid[y * R + x] / nSteps);
+        const g = (field[y * R + x] * 220) | 0;
+        ctx.fillStyle = `rgb(${g},${g},${g + 20})`;
         ctx.fillRect(x * z, y * z, z, z);
       }
-    }
-  }
 
-  // Step outlines: draw a border where a tile's step differs from its up/left neighbour
-  if (P.outline && P.view !== 'cliff') {
-    ctx.fillStyle = 'rgba(20,28,38,0.55)';
-    const t = Math.max(1, Math.round(z / 6));
-    for (let y = 0; y < R; y++) {
+  } else if (sid === 'step_grid' || sid === 'clean_grid') {
+    const grid = sid === 'step_grid' ? precleanGrid : cleanedGrid;
+    for (let y = 0; y < R; y++)
       for (let x = 0; x < R; x++) {
-        const s = stepGrid[y * R + x];
-        if (x > 0 && stepGrid[y * R + x - 1] !== s) ctx.fillRect(x * z, y * z, t, z);
-        if (y > 0 && stepGrid[(y - 1) * R + x] !== s) ctx.fillRect(x * z, y * z, z, t);
+        ctx.fillStyle = paletteColor(grid[y * R + x] / nSteps);
+        ctx.fillRect(x * z, y * z, z, z);
       }
+
+  } else {
+    // Final step (ring_cliffs or null) — respects view mode
+    const sAt = makeSAt(activeGrid, R);
+    if (P.view === 'cliff') {
+      ctx.fillStyle = '#11161c';
+      ctx.fillRect(0, 0, R * z, R * z);
+      for (const [k, c] of cliffMap) {
+        const x = k % R, y = (k / R) | 0;
+        ctx.fillStyle = NAME_COLOR[c.name];
+        ctx.fillRect(x * z, y * z, z, z);
+        const src = tilesReady && TILE_SRC[c.name];
+        if (src) ctx.drawImage(TILE_ATLAS, src.sx, src.sy, 16, 16, x * z, y * z, z, z);
+      }
+    } else if (P.view === 'contour') {
+      ctx.fillStyle = '#11161c';
+      ctx.fillRect(0, 0, R * z, R * z);
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const s = activeGrid[y * R + x];
+          if (s === 0) continue;
+          if (sAt(x,y-1)<s||sAt(x+1,y)<s||sAt(x,y+1)<s||sAt(x-1,y)<s||
+              sAt(x-1,y-1)<s||sAt(x+1,y-1)<s||sAt(x-1,y+1)<s||sAt(x+1,y+1)<s) {
+            ctx.fillStyle = paletteColor(s / nSteps);
+            ctx.fillRect(x * z, y * z, z, z);
+          }
+        }
+    } else {
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          ctx.fillStyle = paletteColor(activeGrid[y * R + x] / nSteps);
+          ctx.fillRect(x * z, y * z, z, z);
+        }
+    }
+    if (P.outline && P.view !== 'cliff') {
+      ctx.fillStyle = 'rgba(20,28,38,0.55)';
+      const t = Math.max(1, Math.round(z / 6));
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const s = activeGrid[y * R + x];
+          if (x > 0 && activeGrid[y * R + x - 1] !== s) ctx.fillRect(x * z, y * z, t, z);
+          if (y > 0 && activeGrid[(y - 1) * R + x] !== s) ctx.fillRect(x * z, y * z, z, t);
+        }
     }
   }
 
-  // Tile grid lines
+  // Tile grid lines (always)
   if (P.gridlines && z >= 4) {
     ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = 1;
@@ -825,10 +888,10 @@ function render() {
     ctx.stroke();
   }
 
-  // Cliff legend (only in cliff view)
+  // Legend: only on final cliff view
   const legend = document.getElementById('legend');
-  if (P.view === 'cliff') {
-    legend.innerHTML = Object.values(CLIFF_TYPES).filter((t) => t.id).map((t) =>
+  if (!sid && P.view === 'cliff') {
+    legend.innerHTML = Object.values(CLIFF_TYPES).filter(t => t.id).map(t =>
       `<div class="item"><span class="sw" style="background:${t.color}"></span>${t.name}</div>`
     ).join('');
     legend.classList.add('on');
@@ -839,6 +902,8 @@ function render() {
   const ms = (performance.now() - t0).toFixed(0);
   document.getElementById('meta').textContent =
     `${P.algo} · ${P.steps} steps · ${R}×${R} tiles · ${R * z}px · ${ms} ms`;
+
+  buildStepList(P);
 }
 
 /* =====================================================================
@@ -926,14 +991,82 @@ function showAlgoParams() {
 
 function maybeRender() { if ($('auto').checked) render(); }
 
+/* =====================================================================
+   Pipeline step definitions + tab switching
+   ===================================================================== */
+const PIPELINE_STEPS = [
+  { id: 'raw_field',    name: 'Raw heightfield',     desc: 'Base noise before falloff shaping',  type: 'hmap',  optional: false },
+  { id: 'shaped_field', name: 'Shaped heightfield',  desc: 'After falloff + normalization',       type: 'hmap',  optional: false },
+  { id: 'step_grid',    name: 'Step grid',           desc: 'Quantized to elevation levels',       type: 'tmap',  optional: false },
+  { id: 'clean_grid',   name: 'Step grid (cleaned)', desc: 'After Factorio-legal cleanup',        type: 'tmap',  optional: true, controlId: 'clean' },
+  { id: 'ring_cliffs',  name: 'Ring cliffs',         desc: 'Traced cliff orientations',           type: 'cliff', optional: false },
+];
+let _currentStep = null; // null = ring_cliffs (final)
+
+function switchTab(tab) {
+  $('tab-params').style.display   = tab === 'params'   ? '' : 'none';
+  $('tab-pipeline').style.display = tab === 'pipeline' ? 'flex' : 'none';
+  $('btn-params').classList.toggle('active',   tab === 'params');
+  $('btn-pipeline').classList.toggle('active', tab === 'pipeline');
+}
+
+function buildStepList(P) {
+  const list = $('step-list');
+  if (!list) return;
+  list.innerHTML = '';
+  PIPELINE_STEPS.forEach(s => {
+    const active = (_currentStep === s.id) || (!_currentStep && s.id === 'ring_cliffs');
+    const div = document.createElement('div');
+    div.className = 'step-item' + (active ? ' active' : '');
+    let html = `<div class="step-info"><div class="step-name">${s.name}</div><div class="step-desc">${s.desc}</div></div>`;
+    html += `<span class="step-badge">${s.type}</span>`;
+    if (s.optional) {
+      html += `<input type="checkbox" class="step-toggle"${P[s.controlId] ? ' checked' : ''}
+        title="Toggle step" onclick="event.stopPropagation(); syncStepToggle('${s.controlId}', this.checked)">`;
+    }
+    div.innerHTML = html;
+    div.addEventListener('click', () => { _currentStep = s.id; render(); });
+    list.appendChild(div);
+  });
+}
+
+function syncStepToggle(controlId, enabled) {
+  const cb = $(controlId);
+  if (cb) cb.checked = enabled;
+  render();
+}
+
+/* =====================================================================
+   State persistence (localStorage)
+   ===================================================================== */
+function saveState() {
+  const state = {};
+  document.querySelectorAll('#panel input, #panel select').forEach(el => {
+    if (el.id) state[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  localStorage.setItem('mountain_state', JSON.stringify(state));
+}
+
+function loadState() {
+  let state;
+  try { state = JSON.parse(localStorage.getItem('mountain_state')); } catch (_) {}
+  if (!state) return;
+  document.querySelectorAll('#panel input, #panel select').forEach(el => {
+    if (el.id && state[el.id] !== undefined) {
+      if (el.type === 'checkbox') el.checked = state[el.id];
+      else el.value = state[el.id];
+    }
+  });
+}
+
 // hook up all inputs
 document.querySelectorAll('input, select').forEach((el) => {
-  el.addEventListener('input', () => { syncLabels(); maybeRender(); });
+  el.addEventListener('input', () => { syncLabels(); saveState(); maybeRender(); });
 });
 $('algo').addEventListener('change', () => { showAlgoParams(); maybeRender(); });
 $('regen').addEventListener('click', render);
 $('rnd').addEventListener('click', () => {
-  $('seed').value = (Math.random() * 1e6) | 0; render();
+  $('seed').value = (Math.random() * 1e6) | 0; saveState(); render();
 });
 $('rndShape').addEventListener('click', () => {
   const rr = (min, max) => min + Math.random() * (max - min);
@@ -944,7 +1077,7 @@ $('rndShape').addEventListener('click', () => {
   $('edgeScale').value = rr(0.8, 3.5).toFixed(1);
   $('warp').value = rr(0.05, 0.45).toFixed(2);
   $('warpScale').value = rr(1, 4).toFixed(1);
-  syncLabels(); render();
+  syncLabels(); saveState(); render();
 });
 $('png').addEventListener('click', () => {
   const a = document.createElement('a');
@@ -954,6 +1087,20 @@ $('png').addEventListener('click', () => {
 });
 $('expSettings').addEventListener('click', exportSettings);
 $('expMap').addEventListener('click', exportMap);
+$('defaults').addEventListener('click', () => {
+  localStorage.removeItem('mountain_state');
+  document.querySelectorAll('#panel input, #panel select').forEach(el => {
+    if (el.type === 'checkbox') {
+      el.checked = el.defaultChecked;
+    } else if (el.tagName === 'SELECT') {
+      const def = Array.from(el.options).find(o => o.defaultSelected);
+      el.value = def ? def.value : (el.options[0] ? el.options[0].value : '');
+    } else {
+      el.value = el.defaultValue;
+    }
+  });
+  syncLabels(); showAlgoParams(); saveState(); render();
+});
 
 /* =====================================================================
    Pan / zoom
@@ -1006,6 +1153,7 @@ function resetView() {
 })();
 
 // init
+loadState();
 syncLabels();
 showAlgoParams();
 render();
