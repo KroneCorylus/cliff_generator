@@ -112,25 +112,8 @@
 
     <div id="tab-params">
     <fieldset>
-      <legend>Shape mode</legend>
-      <div class="row">
-        <select id="mode">
-          <option value="single">Single mountain</option>
-          <option value="range" selected>Mountain range</option>
-        </select>
-      </div>
-    </fieldset>
-    <fieldset>
       <legend>Tile grid</legend>
-      <div class="row">
-        <label>View mode</label>
-        <select id="view">
-          <option value="fill">Terraced fill</option>
-          <option value="contour" selected>Contour tiles only</option>
-          <option value="cliff">Cliff borders (autotile)</option>
-        </select>
-        <div class="hint">Contour = outer ring of each step. Cliff = border tiles by type.</div>
-      </div>
+
       <div class="row">
         <label>Grid size (tiles) <span class="val" id="vRes">64</span></label>
         <input type="range" id="res" min="8" max="256" step="1" value="64" />
@@ -151,23 +134,6 @@
       <div class="hint">Staircases slopes to 1 level &amp; removes 1-wide spikes.</div>
     </fieldset>
 
-    <fieldset>
-      <legend>Steps</legend>
-      <div class="row">
-        <label>Number of steps <span class="val" id="vSteps">8</span></label>
-        <input type="range" id="steps" min="2" max="40" step="1" value="8" />
-      </div>
-      <div class="row">
-        <label>Step spacing</label>
-        <select id="spacing">
-          <option value="linear">Linear (equal height)</option>
-          <option value="ease">Ease-out (wider near top)</option>
-          <option value="easein">Ease-in (wider near base)</option>
-        </select>
-        <div class="hint">How elevation levels are distributed.</div>
-      </div>
-      <div class="hint">Each tile is snapped to one of the step elevations.</div>
-    </fieldset>
 
     <fieldset>
       <legend>Algorithm</legend>
@@ -214,10 +180,34 @@
       <div class="algo-params" data-for="cone gaussian">
         <div class="hint">Smooth analytic shape — good baseline to test the stepping/contouring.</div>
       </div>
+      <div class="row">
+        <label>Domain warp <span class="val" id="vWarp">0.18</span></label>
+        <input type="range" id="warp" min="0" max="0.6" step="0.02" value="0.18" />
+        <div class="hint">Organic, swirled distortion of the terrain.</div>
+      </div>
+      <div class="row">
+        <label>Warp scale <span class="val" id="vWarpScale">2.0</span></label>
+        <input type="range" id="warpScale" min="0.5" max="6" step="0.1" value="2" />
+      </div>
     </fieldset>
 
-    <fieldset id="fs-shaping">
-      <legend id="legend-shaping">Single mountain shaping</legend>
+    <fieldset>
+      <legend>Shape ⛰️</legend>
+      <div class="row">
+        <select id="mode">
+          <option value="single" selected>Single mountain</option>
+          <option value="range">Mountain range</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Steps <span class="val" id="vSteps">8</span></label>
+        <input type="range" id="steps" min="2" max="40" step="1" value="8" />
+      </div>
+      <div class="row">
+        <label>Step bias <span class="val" id="vSpacing">1.00</span></label>
+        <input type="range" id="spacing" min="0.3" max="3" step="0.05" value="1" />
+        <div class="hint">1 = linear. &lt;1 bunches steps toward top, &gt;1 toward base.</div>
+      </div>
       <div class="row">
         <label><span id="lbl-fall">Radial falloff</span> <span class="val" id="vFall">2.2</span></label>
         <input type="range" id="fall" min="0" max="6" step="0.1" value="2.2" />
@@ -233,10 +223,6 @@
         <input type="range" id="sharp" min="0.3" max="3" step="0.1" value="1" />
         <div class="hint">&gt;1 sharpens the summit, &lt;1 flattens it.</div>
       </div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Shape variety</legend>
       <div class="row" id="row-stretch">
         <label>Stretch <span class="val" id="vStretch">0.0</span></label>
         <input type="range" id="stretch" min="-0.7" max="0.7" step="0.05" value="0" />
@@ -271,15 +257,6 @@
         <label>Edge scale <span class="val" id="vEdgeScale">1.6</span></label>
         <input type="range" id="edgeScale" min="0.5" max="5" step="0.1" value="1.6" />
         <div class="hint">Few big lobes (low) vs many small bays (high).</div>
-      </div>
-      <div class="row">
-        <label>Domain warp <span class="val" id="vWarp">0.18</span></label>
-        <input type="range" id="warp" min="0" max="0.6" step="0.02" value="0.18" />
-        <div class="hint">Organic, swirled distortion of the terrain.</div>
-      </div>
-      <div class="row">
-        <label>Warp scale <span class="val" id="vWarpScale">2.0</span></label>
-        <input type="range" id="warpScale" min="0.5" max="6" step="0.1" value="2" />
       </div>
       <div class="btns" style="margin-top:6px">
         <button id="rndShape">Randomize shape</button>
@@ -335,6 +312,11 @@
   <div id="stage">
     <div id="wrap"><canvas id="cv"></canvas></div>
   </div>
+  <select id="view" style="position:fixed;top:8px;left:328px;z-index:10;width:auto">
+    <option value="fill">Terraced fill</option>
+    <option value="contour" selected>Contour tiles only</option>
+    <option value="cliff">Cliff borders (autotile)</option>
+  </select>
 </div>
 <div id="legend"></div>
 <div id="meta"></div>
@@ -610,10 +592,8 @@ const ctx = cv.getContext('2d');
 function levelsFor(P) {
   const out = [];
   for (let s = 1; s <= P.steps; s++) {
-    let t = s / (P.steps + 1);          // strictly inside (0,1)
-    if (P.spacing === 'ease') t = 1 - Math.pow(1 - t, 2);
-    else if (P.spacing === 'easein') t = Math.pow(t, 2);
-    out.push(t);
+    const t = s / (P.steps + 1);
+    out.push(Math.pow(t, P.spacing));
   }
   return out;
 }
@@ -811,6 +791,22 @@ function nameRingLoop(loop, inA) {
   return out;
 }
 
+const DIR_OFFSET = { north: [0,-1], south: [0,1], east: [1,0], west: [-1,0] };
+const DIR_OPP    = { north: 'south', south: 'north', east: 'west', west: 'east' };
+function markOpenCliffs(cliffMap, R) {
+  for (const [k, c] of cliffMap) {
+    const x = k % R, y = (k / R) | 0;
+    const [fromDir, toDir] = c.name.split('-to-');
+    const [fdx, fdy] = DIR_OFFSET[fromDir];
+    const prev = cliffMap.get((y + fdy) * R + (x + fdx));
+    const prevOk = prev && prev.name.endsWith('-to-' + DIR_OPP[fromDir]);
+    const [tdx, tdy] = DIR_OFFSET[toDir];
+    const next = cliffMap.get((y + tdy) * R + (x + tdx));
+    const nextOk = next && next.name.startsWith(DIR_OPP[toDir] + '-to-');
+    c.open = !prevOk || !nextOk;
+  }
+}
+
 // Build the per-tile cliff map by tracing every level innermost -> outermost.
 // Inner rings are placed first; an outer ring yields (skips) on an occupied tile.
 function ringCliffs(stepGrid, R) {
@@ -899,6 +895,7 @@ async function render() {
   if (seq !== _renderSeq) return;                 // a newer render superseded this one
   const { rawField, shapedField, precleanGrid, cleanedGrid, nSteps, cliffMap } = data;
   const activeGrid = P.clean ? cleanedGrid : precleanGrid;
+  markOpenCliffs(cliffMap, R);
 
   // --- Draw selected pipeline step ---
   cv.width = R * z; cv.height = R * z;
@@ -938,6 +935,7 @@ async function render() {
         ctx.fillRect(x * z, y * z, z, z);
         const src = tilesReady && TILE_SRC[c.name];
         if (src) ctx.drawImage(TILE_ATLAS, src.sx, src.sy, 16, 16, x * z, y * z, z, z);
+        if (c.open) { ctx.fillStyle = 'rgba(255,32,32,0.85)'; ctx.fillRect(x * z, y * z, z, z); }
       }
     } else if (P.view === 'contour') {
       ctx.fillStyle = '#11161c';
@@ -1048,9 +1046,9 @@ async function exportMap() {
 const $ = (id) => document.getElementById(id);
 function readParams() {
   return {
-    res: +$('res').value, zoom: 9, view: $('view').value,
+    res: +$('res').value, zoom: 16, view: $('view').value,
     gridlines: $('gridlines').checked, outline: $('outline').checked, clean: $('clean').checked,
-    steps: +$('steps').value, spacing: $('spacing').value,
+    steps: +$('steps').value, spacing: +$('spacing').value,
     algo: $('algo').value,
     freq: +$('freq').value, oct: +$('oct').value, pers: +$('pers').value, lac: +$('lac').value,
     rough: +$('rough').value,
@@ -1068,7 +1066,7 @@ function readParams() {
 
 // live value labels
 const labelMap = {
-  res: 'vRes', steps: 'vSteps',
+  res: 'vRes', steps: 'vSteps', spacing: 'vSpacing',
   freq: 'vFreq', oct: 'vOct', pers: 'vPers', lac: 'vLac', rough: 'vRough',
   fall: 'vFall', rad: 'vRad', sharp: 'vSharp',
   stretch: 'vStretch', rot: 'vRot', edge: 'vEdge', edgeScale: 'vEdgeScale',
@@ -1076,7 +1074,7 @@ const labelMap = {
   rangeWidth: 'vRangeWidth', spineWarp: 'vSpineWarp', spineWarpScale: 'vSpineWarpScale',
 };
 const fmt = {
-  pers: 2, lac: 1, freq: 1, rough: 2, fall: 1, rad: 2, sharp: 1,
+  spacing: 2, pers: 2, lac: 1, freq: 1, rough: 2, fall: 1, rad: 2, sharp: 1,
   stretch: 1, rot: 2, edge: 2, edgeScale: 1, warp: 2, warpScale: 1,
   rangeWidth: 0, spineWarp: 2, spineWarpScale: 1,
 };
@@ -1100,7 +1098,6 @@ function showModeParams() {
   $('row-rangeWidth').style.display     = isRange ? ''     : 'none';
   $('row-spineWarp').style.display      = isRange ? ''     : 'none';
   $('row-spineWarpScale').style.display = isRange ? ''     : 'none';
-  $('legend-shaping').textContent   = isRange ? 'Range shaping'    : 'Single mountain shaping';
   $('lbl-fall').textContent         = isRange ? 'Falloff power'    : 'Radial falloff';
   $('hint-fall').textContent        = isRange ? 'Steepness of the capsule falloff. 0 = none.' : 'Pulls terrain into one central peak. 0 = none.';
   $('lbl-rad').textContent          = isRange ? 'Range length'     : 'Mountain radius';
